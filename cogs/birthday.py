@@ -17,6 +17,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from checks import NotStaff, is_staff
+
 log = logging.getLogger("furbot.birthday")
 
 BIRTHDAYS = "birthdays"  # {user_id_str: {"d": int, "m": int, "y": int|None}}
@@ -142,7 +144,7 @@ class Birthday(commands.Cog):
 
     # ---- recurring feature invite ---------------------------------------
 
-    @tasks.loop(hours=6)
+    @tasks.loop(minutes=30)
     async def promo_loop(self) -> None:
         """Post the birthday-feature invite every `birthday_promo_days` days.
         The last-post time is persisted so restarts/redeploys don't repost."""
@@ -231,9 +233,34 @@ class Birthday(commands.Cog):
         await self.store.set(BIRTHDAYS, birthdays)
         await interaction.response.send_message("🗑️ Your birthday has been removed.", ephemeral=True)
 
+    @group.command(name="announce", description="(Staff) Post the birthday-feature invite now.")
+    @is_staff()
+    async def announce(self, interaction: discord.Interaction) -> None:
+        ch_id = self._s("birthday_promo_channel_id")
+        channel = self.bot.get_channel(ch_id) if ch_id else None
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Set the channel first: `/config set birthday_promo_channel_id <id>`.", ephemeral=True
+            )
+            return
+        message = self._s("birthday_promo_message")
+        if not message:
+            await interaction.response.send_message("No promo message is configured.", ephemeral=True)
+            return
+        await channel.send(message)
+        await self.store.set(PROMO_LAST, int(time.time()))
+        await interaction.response.send_message(f"📣 Posted the birthday invite in {channel.mention}.", ephemeral=True)
+
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
+            if not interaction.response.is_done():
+                await interaction.response.send_message(msg, ephemeral=True)
+            else:
+                await interaction.followup.send(msg, ephemeral=True)
+            return
         log.exception("Birthday command error", exc_info=error)
         msg = "Something went wrong with that command."
         if interaction.response.is_done():
