@@ -192,6 +192,14 @@ class Store:
             del self._data[key]
             await self._delete_key_files(key)
 
+    async def ensure_defaults(self, defaults: dict[str, Any]) -> None:
+        """Create files for any missing datasets so the storage folder is
+        populated up-front (idempotent — only writes keys that don't exist)."""
+        for key, value in defaults.items():
+            if key not in self._data:
+                self._data[key] = value
+                await self._persist_key(key)
+
     async def update(self, mutator: Callable[[dict[str, Any]], None]) -> None:
         """Apply several changes, then persist only the files that changed."""
         before = {k: json.dumps(v, sort_keys=True) for k, v in self._data.items()}

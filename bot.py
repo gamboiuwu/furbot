@@ -72,6 +72,17 @@ class FurBot(commands.Bot):
             log.info("Nextcloud not configured; using local files in %s.", self.config.data_dir)
         await self.store.load()
 
+        # Populate the storage folder up-front so the JSON files exist (and are
+        # visible on Nextcloud) rather than appearing only on first change.
+        await self.settings.initialize()
+        await self.store.ensure_defaults({
+            "stats": {},
+            "audit": [],
+            "pending_unbans": {},
+            "onboarding.reminded": {},
+            "onboarding.escalated": {},
+        })
+
         # Load every feature module.
         for cog in INITIAL_COGS:
             try:

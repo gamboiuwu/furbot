@@ -82,6 +82,19 @@ class Settings:
         log.info("Setting %s set to %r", key, value)
         return value
 
+    async def initialize(self) -> None:
+        """Make sure settings.json exists and lists every known property, so
+        it's visible/editable in the storage folder. Fills any missing key with
+        its current effective (env/default) value. Idempotent."""
+        overrides = dict(self.store.get(SETTINGS_KEY, {}))
+        changed = False
+        for key in SETTINGS:
+            if key not in overrides:
+                overrides[key] = self.get(key)
+                changed = True
+        if changed:
+            await self.store.set(SETTINGS_KEY, overrides)
+
     async def reset(self, key: str) -> bool:
         """Remove an override (revert to env/default). Returns True if removed."""
         if key not in SETTINGS:
