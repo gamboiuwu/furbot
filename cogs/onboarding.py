@@ -244,6 +244,9 @@ class Onboarding(commands.Cog, MemberActions):
         reminder_h = self._s("onboarding_reminder_hours")
         grace_s = self._s("onboarding_grace_hours") * 3600
         reminded = self.store.get(REMINDED, {})
+        # Members who posted in the verify channel are handled by staff, never
+        # auto-reminded or auto-kicked — they made the effort.
+        answered = self.store.get(VERIFY_WAITING, {})
         now = discord.utils.utcnow()
         now_ts = time.time()
         due_remind: list[discord.Member] = []
@@ -251,6 +254,8 @@ class Onboarding(commands.Cog, MemberActions):
         for m in guild.members:
             if m.bot or role in m.roles or m.joined_at is None:
                 continue
+            if str(m.id) in answered:
+                continue  # they answered → staff's discretion
             notified_at = reminded.get(f"{guild.id}:{m.id}")
             if notified_at is not None:
                 if now_ts - notified_at >= grace_s:
