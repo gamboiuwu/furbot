@@ -1,26 +1,44 @@
-"""Verification flow.
+"""Verification flow, driven by staff reactions in the verification channel.
 
-When a staff member adds the approval emoji to a message in the
-verification channel, the author of that message is given the "Floofs"
-role automatically. There is also a manual `/verify` slash command as a
-fallback.
+A staff member reacts to a new member's message with one of three emojis:
+
+  ✅  approve  -> give the member the Floofs role + welcome DM
+  ❌  reject   -> DM the member, then temp-ban them for a cooldown period
+                  (default 24h) and auto-unban when it expires
+  ⚠️  warn     -> DM the member that something was wrong with how they
+                  verified and they should try again
+
+There is also a manual `/verify` slash command as a fallback for approval.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
+
+from store import JsonStore
 
 log = logging.getLogger("furbot.verification")
+
+# Key in the store holding pending unbans: {"guild_id:user_id": unban_at_epoch}.
+PENDING_UNBANS = "pending_unbans"
 
 
 class Verification(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.config = bot.config
+        self.store = JsonStore(f"{self.config.data_dir}/verification.json")
+
+    async def cog_load(self) -> None:
+        self.process_unbans.start()
+
+    async def cog_unload(self) -> None:
+        self.process_unbans.cancel()
 
     # ---- helpers ---------------------------------------------------------
 
@@ -32,18 +50,34 @@ class Verification(commands.Cog):
                 return True
         return member.guild_permissions.manage_roles
 
-    def _emoji_matches(self, emoji: discord.PartialEmoji | discord.Emoji | str) -> bool:
-        """True if the reacted emoji matches the configured approval emoji.
-
-        Supports both unicode emoji (e.g. ✅) and custom server emoji
-        (matched by name or by the full <:name:id> form)."""
-        target = self.config.approval_emoji
-        emoji_str = str(emoji)
-        if emoji_str == target:
+    @staticmethod
+    def _emoji_matches(emoji: discord.PartialEmoji | discord.Emoji | str, target: str) -> bool:
+        """True if the reacted emoji matches `target`. Supports unicode emoji
+        and custom server emoji (matched by name or full form)."""
+        if str(emoji) == target:
             return True
-        # Allow matching a custom emoji by its bare name, e.g. APPROVAL_EMOJI=verified
         name = getattr(emoji, "name", None)
         return name is not None and name == target.strip(":")
+
+    async def _log_action(self, message: str) -> None:
+        if not self.config.log_channel_id:
+            return
+        channel = self.bot.get_channel(self.config.log_channel_id)
+        if isinstance(channel, discord.TextChannel):
+            try:
+                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                log.exception("Failed to write to log channel")
+
+    @staticmethod
+    async def _try_dm(member: discord.abc.User, content: str) -> None:
+        """DM a member, ignoring failures (closed DMs, etc.)."""
+        try:
+            await member.send(content)
+        except discord.HTTPException:
+            pass
+
+    # ---- approve ---------------------------------------------------------
 
     async def _grant_floofs(
         self, member: discord.Member, *, by: discord.Member, reason: str
@@ -58,54 +92,102 @@ class Verification(commands.Cog):
         await member.add_roles(role, reason=f"Verified by {by} ({reason})")
         log.info("Granted Floofs to %s (by %s)", member, by)
         await self._log_action(
-            f"🐾 **{member.mention}** was given **{role.name}** by **{by.display_name}** ({reason})."
+            f"🐾 **{member.display_name}** was verified by **{by.display_name}**."
         )
-        # Friendly DM — ignore failures (user may have DMs closed).
-        try:
-            await member.send(
-                f"Welcome to **{member.guild.name}**! You've been verified and given "
-                f"the **{role.name}** role. 🐾"
-            )
-        except discord.HTTPException:
-            pass
+        await self._try_dm(
+            member,
+            f"Welcome to **{member.guild.name}**! You've been verified and given "
+            f"the **{role.name}** role. 🐾",
+        )
         return True
 
-    async def _log_action(self, message: str) -> None:
-        if not self.config.log_channel_id:
-            return
-        channel = self.bot.get_channel(self.config.log_channel_id)
-        if isinstance(channel, discord.TextChannel):
-            try:
-                await channel.send(message)
-            except discord.HTTPException:
-                log.exception("Failed to write to log channel")
+    # ---- reject (temp-ban with cooldown) ---------------------------------
 
-    # ---- reaction-to-role ------------------------------------------------
+    async def _reject(self, member: discord.Member, *, by: discord.Member) -> None:
+        guild = member.guild
+        hours = self.config.reject_cooldown_hours
+
+        # DM first — once banned we may no longer share a server to DM them.
+        await self._try_dm(
+            member,
+            f"You were **not verified** in **{guild.name}**. There is a "
+            f"**{hours}-hour cooldown** before you can rejoin and try again. "
+            "If you believe this was a mistake, please reach out to the staff team.",
+        )
+
+        try:
+            await guild.ban(
+                member,
+                reason=f"Verification rejected by {by} ({hours}h cooldown)",
+                delete_message_seconds=0,
+            )
+        except discord.Forbidden:
+            log.warning("Missing Ban Members permission — cannot reject %s", member)
+            await self._log_action(
+                f"⚠️ Tried to reject **{member.display_name}** but I'm missing the "
+                "**Ban Members** permission. Please grant it to my role."
+            )
+            return
+        except discord.HTTPException:
+            log.exception("Failed to ban %s", member)
+            return
+
+        unban_at = time.time() + hours * 3600
+        pending = self.store.get(PENDING_UNBANS, {})
+        pending[f"{guild.id}:{member.id}"] = unban_at
+        self.store.set(PENDING_UNBANS, pending)
+
+        log.info("Rejected (temp-banned) %s for %sh (by %s)", member, hours, by)
+        await self._log_action(
+            f"⛔ **{member.display_name}** was not verified by **{by.display_name}** "
+            f"and was banned for {hours}h (auto-unban scheduled)."
+        )
+
+    # ---- warn ------------------------------------------------------------
+
+    async def _warn(self, member: discord.Member, *, by: discord.Member) -> None:
+        await self._try_dm(
+            member,
+            f"Hi! A staff member reviewed your verification in **{member.guild.name}** "
+            "and it looks like something wasn't quite right with how you verified. "
+            "Please re-read the verification instructions and try again. If you're "
+            "unsure what needs fixing, reply to the staff team and we'll help you out. 🐾",
+        )
+        log.info("Warned %s (by %s)", member, by)
+        await self._log_action(
+            f"⚠️ **{member.display_name}** was warned by **{by.display_name}** "
+            "to redo their verification."
+        )
+
+    # ---- reaction dispatch ----------------------------------------------
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        # Only act in the configured verification channel.
         if not self.config.verification_channel_id:
             return
         if payload.channel_id != self.config.verification_channel_id:
             return
         if payload.guild_id is None:
             return
-        if not self._emoji_matches(payload.emoji):
+
+        # Which action does this emoji map to?
+        if self._emoji_matches(payload.emoji, self.config.approval_emoji):
+            action = "approve"
+        elif self._emoji_matches(payload.emoji, self.config.reject_emoji):
+            action = "reject"
+        elif self._emoji_matches(payload.emoji, self.config.warn_emoji):
+            action = "warn"
+        else:
             return
 
         guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
             return
 
-        # The staff member who reacted.
         reactor = payload.member or guild.get_member(payload.user_id)
-        if reactor is None or reactor.bot:
-            return
-        if not self._is_staff(reactor):
+        if reactor is None or reactor.bot or not self._is_staff(reactor):
             return
 
-        # Find the message and its author.
         channel = guild.get_channel(payload.channel_id)
         if not isinstance(channel, discord.TextChannel):
             return
@@ -118,7 +200,49 @@ class Verification(commands.Cog):
         if not isinstance(target, discord.Member) or target.bot:
             return
 
-        await self._grant_floofs(target, by=reactor, reason="reaction approval")
+        if action == "approve":
+            await self._grant_floofs(target, by=reactor, reason="reaction approval")
+        elif action == "reject":
+            await self._reject(target, by=reactor)
+        elif action == "warn":
+            await self._warn(target, by=reactor)
+
+    # ---- background: expire cooldowns -----------------------------------
+
+    @tasks.loop(minutes=5)
+    async def process_unbans(self) -> None:
+        """Periodically unban anyone whose cooldown has expired. Re-reads the
+        persisted list each tick, so it's robust across restarts."""
+        pending = self.store.get(PENDING_UNBANS, {})
+        if not pending:
+            return
+        now = time.time()
+        changed = False
+        for key, unban_at in list(pending.items()):
+            if unban_at > now:
+                continue
+            try:
+                guild_id_str, user_id_str = key.split(":")
+                guild = self.bot.get_guild(int(guild_id_str))
+                if guild is not None:
+                    await guild.unban(
+                        discord.Object(id=int(user_id_str)),
+                        reason="Verification cooldown expired",
+                    )
+                    log.info("Auto-unbanned user %s in guild %s", user_id_str, guild_id_str)
+            except discord.NotFound:
+                pass  # already unbanned / not banned anymore
+            except discord.HTTPException:
+                log.exception("Failed to auto-unban %s", key)
+                continue  # leave it pending; retry next tick
+            del pending[key]
+            changed = True
+        if changed:
+            self.store.set(PENDING_UNBANS, pending)
+
+    @process_unbans.before_loop
+    async def _before_unbans(self) -> None:
+        await self.bot.wait_until_ready()
 
     # ---- manual fallback command ----------------------------------------
 

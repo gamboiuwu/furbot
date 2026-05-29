@@ -45,10 +45,18 @@ class Config:
     verification_channel_id: int | None
     floofs_role_id: int | None
     staff_role_id: int | None
-    approval_emoji: str
+    approval_emoji: str   # staff reacts with this to APPROVE -> grant Floofs
+    reject_emoji: str     # staff reacts with this to REJECT -> temp-ban + DM
+    warn_emoji: str       # staff reacts with this to WARN -> DM "redo verification"
+    reject_cooldown_hours: int  # how long a rejected user is banned before auto-unban
 
     # Optional channel to log staff actions to.
     log_channel_id: int | None
+
+    # Where to persist data that must survive restarts (e.g. pending unbans).
+    # On Railway, attach a Volume and set DATA_DIR to its mount path so the
+    # cooldown list isn't lost on redeploy.
+    data_dir: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -77,5 +85,9 @@ class Config:
             floofs_role_id=_get_int("FLOOFS_ROLE_ID"),
             staff_role_id=_get_int("STAFF_ROLE_ID"),
             approval_emoji=os.getenv("APPROVAL_EMOJI", "✅").strip() or "✅",
+            reject_emoji=os.getenv("REJECT_EMOJI", "❌").strip() or "❌",
+            warn_emoji=os.getenv("WARN_EMOJI", "⚠️").strip() or "⚠️",
+            reject_cooldown_hours=_get_int("REJECT_COOLDOWN_HOURS") or 24,
             log_channel_id=_get_int("LOG_CHANNEL_ID"),
+            data_dir=os.getenv("DATA_DIR", "data").strip() or "data",
         )
