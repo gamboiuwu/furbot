@@ -124,11 +124,13 @@ class Birthday(commands.Cog):
                 except discord.HTTPException:
                     log.exception("Failed to remove birthday role from %s", m)
 
-        # Add the role + shout out today's birthdays (once each).
-        for uid in celebrant_ids:
-            member = guild.get_member(uid)
-            if member is not None:
-                await self._celebrate(guild, member)
+        # Add the role + shout out today's birthdays (once each), but only from
+        # the announce hour onward — so it happens at ~8 AM, not just past midnight.
+        if now.hour >= (self._s("birthday_announce_hour") or 8):
+            for uid in celebrant_ids:
+                member = guild.get_member(uid)
+                if member is not None:
+                    await self._celebrate(guild, member)
 
     @daily_check.before_loop
     async def _before(self) -> None:
@@ -166,11 +168,13 @@ class Birthday(commands.Cog):
             ephemeral=True,
         )
 
-        # If it's already their birthday today, celebrate right away.
+        # If it's already their birthday AND past the announce hour, celebrate now;
+        # otherwise the daily check handles it at the announce hour.
         guild = interaction.guild
         member = interaction.user
         if isinstance(guild, discord.Guild) and isinstance(member, discord.Member):
-            if self._is_today(birthdays[str(member.id)], datetime.datetime.now(self._tz())):
+            now = datetime.datetime.now(self._tz())
+            if self._is_today(birthdays[str(member.id)], now) and now.hour >= (self._s("birthday_announce_hour") or 8):
                 await self._celebrate(guild, member)
 
     @group.command(name="view", description="See a saved birthday.")

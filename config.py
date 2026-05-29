@@ -103,6 +103,7 @@ class Config:
     birthday_channel_id: int | None
     birthday_message: str | None
     birthday_timezone: str | None
+    birthday_announce_hour: int | None
 
     @property
     def webdav_enabled(self) -> bool:
@@ -160,4 +161,5 @@ class Config:
             birthday_channel_id=_get_int("BIRTHDAY_CHANNEL_ID"),
             birthday_message=os.getenv("BIRTHDAY_MESSAGE", "").strip() or None,
             birthday_timezone=os.getenv("BIRTHDAY_TIMEZONE", "").strip() or None,
+            birthday_announce_hour=_get_int("BIRTHDAY_ANNOUNCE_HOUR"),
         )

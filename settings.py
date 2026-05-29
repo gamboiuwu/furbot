@@ -36,6 +36,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "birthday_message":          (str,   "🎉🎂 Happy birthday {member}! Everyone give them some love today! 🐾",
                                   "Birthday shoutout. {member} = mention, {server} = server name."),
     "birthday_timezone":         (str,   "America/New_York", "Timezone used to decide when it's someone's birthday."),
+    "birthday_announce_hour":    (int,   8,     "Hour (0-23, in the birthday timezone) to post shoutouts & give the role."),
 }
 
 
