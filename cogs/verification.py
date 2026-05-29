@@ -20,6 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from checks import NotStaff, is_staff
 from store import JsonStore
 
 log = logging.getLogger("furbot.verification")
@@ -248,7 +249,7 @@ class Verification(commands.Cog):
 
     @app_commands.command(name="verify", description="Manually verify a member and give them the Floofs role.")
     @app_commands.describe(member="The member to verify")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @is_staff()
     async def verify(self, interaction: discord.Interaction, member: discord.Member) -> None:
         if not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -262,12 +263,13 @@ class Verification(commands.Cog):
                 ephemeral=True,
             )
 
-    @verify.error
-    async def verify_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "You need the **Manage Roles** permission to use this."
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
         else:
-            log.exception("verify command error", exc_info=error)
+            log.exception("Command error in Verification cog", exc_info=error)
             msg = "Something went wrong running that command."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)

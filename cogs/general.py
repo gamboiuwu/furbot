@@ -1,66 +1,72 @@
 """General-purpose / utility commands.
 
 A small starter set of commands. This is the easiest place to add new
-"other stuff" as the bot grows.
+"other stuff" as the bot grows. All commands here are staff-only.
 """
 
 from __future__ import annotations
 
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from checks import NotStaff, is_staff
+
+log = logging.getLogger("furbot.general")
 
 
 class General(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
+        else:
+            log.exception("Command error in General cog", exc_info=error)
+            msg = "Something went wrong running that command."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
     @app_commands.command(name="help", description="Show everything FurBot can do.")
+    @is_staff()
     async def help(self, interaction: discord.Interaction) -> None:
         cfg = self.bot.config
-        is_staff = (
-            isinstance(interaction.user, discord.Member)
-            and interaction.user.guild_permissions.manage_roles
-        )
 
         embed = discord.Embed(
             title="🐾 FurBot — Commands & Features",
-            description="Here's everything I can do for the NYFurs server.",
+            description="Everything I can do for the NYFurs server (staff only).",
             color=discord.Color.blurple(),
         )
-
         embed.add_field(
-            name="📋 Commands for everyone",
+            name="🛡️ Commands",
             value=(
                 "**/help** — show this message\n"
                 "**/ping** — check that I'm online and see my latency\n"
-                "**/floofcount** — how many members have the Floofs role"
+                "**/floofcount** — how many members have the Floofs role\n"
+                "**/verify @member** — manually give someone the Floofs role\n"
+                "**/userinfo @member** — account age, join date & roles (vetting)\n"
+                "**/roles** — list every role with its ID (for setup)"
             ),
             inline=False,
         )
-
-        if is_staff:
-            embed.add_field(
-                name="🛡️ Staff commands",
-                value=(
-                    "**/verify @member** — manually give someone the Floofs role\n"
-                    "**/userinfo @member** — account age, join date & roles (vetting)\n"
-                    "**/roles** — list every role with its ID (for setup)"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="✅ Verification reactions (staff only)",
-                value=(
-                    "In the verification channel, react to a member's message:\n"
-                    f"{cfg.approval_emoji} **Approve** — grant the Floofs role + welcome DM\n"
-                    f"{cfg.reject_emoji} **Reject** — DM them and temp-ban for "
-                    f"{cfg.reject_cooldown_hours}h (auto-unban after)\n"
-                    f"{cfg.warn_emoji} **Warn** — DM them to redo their verification"
-                ),
-                inline=False,
-            )
-
+        embed.add_field(
+            name="✅ Verification reactions",
+            value=(
+                "In the verification channel, react to a member's message:\n"
+                f"{cfg.approval_emoji} **Approve** — grant the Floofs role + welcome DM\n"
+                f"{cfg.reject_emoji} **Reject** — DM them and temp-ban for "
+                f"{cfg.reject_cooldown_hours}h (auto-unban after)\n"
+                f"{cfg.warn_emoji} **Warn** — DM them to redo their verification"
+            ),
+            inline=False,
+        )
         embed.set_footer(text="Only you can see this message.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -69,7 +75,7 @@ class General(commands.Cog):
         description="Show a member's account details (handy for vetting before verifying).",
     )
     @app_commands.describe(member="The member to look up")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @is_staff()
     async def userinfo(self, interaction: discord.Interaction, member: discord.Member) -> None:
         created_ts = int(member.created_at.timestamp())
         account_age_days = (discord.utils.utcnow() - member.created_at).days
@@ -109,24 +115,14 @@ class General(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @userinfo.error
-    async def userinfo_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        msg = (
-            "You need the **Manage Roles** permission to use this."
-            if isinstance(error, app_commands.MissingPermissions)
-            else "Something went wrong looking that up."
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
-
     @app_commands.command(name="ping", description="Check that the bot is alive and see its latency.")
+    @is_staff()
     async def ping(self, interaction: discord.Interaction) -> None:
         latency_ms = round(self.bot.latency * 1000)
         await interaction.response.send_message(f"🏓 Pong! Latency: {latency_ms}ms", ephemeral=True)
 
     @app_commands.command(name="floofcount", description="See how many members currently have the Floofs role.")
+    @is_staff()
     async def floofcount(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         role_id = getattr(self.bot.config, "floofs_role_id", None)
@@ -147,9 +143,8 @@ class General(commands.Cog):
             f"🐾 There are **{len(role.members)}** floofs in the server!", ephemeral=True
         )
 
-
     @app_commands.command(name="roles", description="List every role and its ID (handy for configuring the bot).")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @is_staff()
     async def roles(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         if guild is None:
@@ -169,18 +164,6 @@ class General(commands.Cog):
         if len(text) > 1900:
             text = text[:1900] + "\n… (list truncated)"
         await interaction.response.send_message(text, ephemeral=True)
-
-    @roles.error
-    async def roles_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        msg = (
-            "You need the **Manage Roles** permission to use this."
-            if isinstance(error, app_commands.MissingPermissions)
-            else "Something went wrong listing roles."
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
