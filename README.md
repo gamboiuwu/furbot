@@ -15,6 +15,9 @@ A Discord bot for the **NYFurs** server and staff team, built with
   All actions are logged to the log channel (no pings).
 - **`/verify @member`** — a manual fallback for staff to verify someone
   directly (requires the *Manage Roles* permission).
+- **`/userinfo @member`** — account age, join date, roles, and verified
+  status; flags accounts under a week old (handy for vetting). Staff only.
+- **`/help`** — lists everything the bot can do.
 - **`/floofcount`** — shows how many members have the Floofs role.
 - **`/ping`** — quick health check.
 

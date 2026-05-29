@@ -44,6 +44,7 @@ class General(commands.Cog):
                 name="🛡️ Staff commands",
                 value=(
                     "**/verify @member** — manually give someone the Floofs role\n"
+                    "**/userinfo @member** — account age, join date & roles (vetting)\n"
                     "**/roles** — list every role with its ID (for setup)"
                 ),
                 inline=False,
@@ -62,6 +63,63 @@ class General(commands.Cog):
 
         embed.set_footer(text="Only you can see this message.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="userinfo",
+        description="Show a member's account details (handy for vetting before verifying).",
+    )
+    @app_commands.describe(member="The member to look up")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def userinfo(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        created_ts = int(member.created_at.timestamp())
+        account_age_days = (discord.utils.utcnow() - member.created_at).days
+
+        embed = discord.Embed(
+            title=f"👤 {member}",
+            color=member.color if member.color.value else discord.Color.blurple(),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="User ID", value=f"`{member.id}`", inline=False)
+        embed.add_field(
+            name="Account created",
+            value=f"<t:{created_ts}:D> (<t:{created_ts}:R>)\n**{account_age_days} days** old",
+            inline=False,
+        )
+        if member.joined_at:
+            joined_ts = int(member.joined_at.timestamp())
+            embed.add_field(name="Joined server", value=f"<t:{joined_ts}:D> (<t:{joined_ts}:R>)", inline=False)
+
+        # Young accounts are the classic raid/alt signal — flag them.
+        if account_age_days < 7:
+            embed.add_field(
+                name="⚠️ Heads up",
+                value="This account is **less than a week old** — double-check before verifying.",
+                inline=False,
+            )
+
+        floofs_id = getattr(self.bot.config, "floofs_role_id", None)
+        verified = bool(floofs_id) and any(r.id == floofs_id for r in member.roles)
+        embed.add_field(name="Verified?", value="✅ Yes" if verified else "❌ Not yet", inline=False)
+
+        roles = [r.mention for r in reversed(member.roles) if not r.is_default()]
+        embed.add_field(
+            name=f"Roles ({len(roles)})",
+            value=", ".join(roles) if roles else "None",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @userinfo.error
+    async def userinfo_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        msg = (
+            "You need the **Manage Roles** permission to use this."
+            if isinstance(error, app_commands.MissingPermissions)
+            else "Something went wrong looking that up."
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
 
     @app_commands.command(name="ping", description="Check that the bot is alive and see its latency.")
     async def ping(self, interaction: discord.Interaction) -> None:
