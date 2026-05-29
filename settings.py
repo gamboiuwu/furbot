@@ -40,6 +40,9 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "birthday_promo_channel_id": (int,   0,     "Channel to periodically post the birthday-feature invite (e.g. #bot-commands)."),
     "birthday_promo_days":       (int,   3,     "How often (days) to post the birthday-feature invite."),
     "leaderboard_channel_id":    (int,   0,     "Channel for the month-end staff congratulations (defaults to the log channel)."),
+    "verify_pending_enabled":    (bool,  True,  "Ping staff when someone who answered in the verify channel waits too long."),
+    "verify_escalate_hours":     (int,   48,    "Hours after a verify-channel message before pinging staff to push them."),
+    "verify_followup_hours":     (int,   24,    "Hours after staff is pinged (no action) before the 'are you still there?' nudge."),
     "birthday_promo_message":    (str,
         "Hey there! 🐾\n"
         "If you want, you can let us know about your birthday so the bot can give you the "

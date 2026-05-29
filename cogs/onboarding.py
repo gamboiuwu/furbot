@@ -31,6 +31,8 @@ log = logging.getLogger("furbot.onboarding")
 REMINDED = "onboarding.reminded"      # {"guild:user": epoch_first_reminded}
 ESCALATED = "onboarding.escalated"    # {"guild:user": {"at": epoch, "mod_id": int}}
 SUMMARY_MSG = "onboarding.summary_msg"  # {"channel_id": int, "message_id": int}
+# Members who posted in the verify channel and are awaiting a manual push.
+VERIFY_WAITING = "verify_waiting"     # {user_id: {at, escalated_at, mod_id, followed_up}}
 
 STAFF_ONLY = "🔒 This action is for staff only."
 
@@ -193,10 +195,12 @@ class Onboarding(commands.Cog, MemberActions):
     async def cog_load(self) -> None:
         self.sweep.start()
         self.auto_loop.start()
+        self.verify_pending_loop.start()
 
     async def cog_unload(self) -> None:
         self.sweep.cancel()
         self.auto_loop.cancel()
+        self.verify_pending_loop.cancel()
 
     # ---- small helpers ---------------------------------------------------
 
@@ -499,6 +503,12 @@ class Onboarding(commands.Cog, MemberActions):
                 f"📱 **{member}** says they **can't set up a verified phone number** and is asking for a "
                 f"**manual review** in **{guild.name}**. Please check {chan} and decide below."
             )
+        elif reason == "pending":
+            embed.description = (
+                f"⏳ **{member}** answered in {chan} and has been waiting **over "
+                f"{self._s('verify_escalate_hours')} hours** to be verified in **{guild.name}**. "
+                "Please review and push them through."
+            )
         else:
             embed.description = (
                 f"**{member}** has been waiting **over {self._s('onboarding_reminder_hours')} hours** to be "
@@ -691,6 +701,94 @@ class Onboarding(commands.Cog, MemberActions):
     @auto_loop.before_loop
     async def _before_auto(self) -> None:
         await self.bot.wait_until_ready()
+
+    # ---- "answered but still waiting" escalation ------------------------
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Track unverified members who post in the verification channel, so we
+        can ping staff if they're left waiting too long."""
+        if message.author.bot or not self._s("verify_pending_enabled"):
+            return
+        if message.channel.id != self.config.verification_channel_id:
+            return
+        member = message.author
+        if not isinstance(member, discord.Member):
+            return
+        role = self._floofs_role(member.guild)
+        if role is not None and role in member.roles:
+            return  # already verified
+        waiting = self.store.get(VERIFY_WAITING, {})
+        if str(member.id) in waiting:
+            return  # keep the original "waiting since" time
+        await self.store.update(
+            lambda d: d.setdefault(VERIFY_WAITING, {}).__setitem__(
+                str(member.id),
+                {"at": int(time.time()), "escalated_at": None, "mod_id": None, "followed_up": False},
+            )
+        )
+
+    @tasks.loop(minutes=30)
+    async def verify_pending_loop(self) -> None:
+        if not self._s("verify_pending_enabled"):
+            return
+        guild = self._guild()
+        if guild is None or not self.config.verification_channel_id:
+            return
+        waiting = dict(self.store.get(VERIFY_WAITING, {}))
+        if not waiting:
+            return
+        if not guild.chunked:
+            try:
+                await guild.chunk()
+            except (discord.HTTPException, discord.ClientException):
+                return
+        role = self._floofs_role(guild)
+        now = time.time()
+        esc_s = self._s("verify_escalate_hours") * 3600
+        fu_s = self._s("verify_followup_hours") * 3600
+        changed = False
+        for key in list(waiting.keys()):
+            info = waiting[key]
+            member = guild.get_member(int(key))
+            if member is None or (role is not None and role in member.roles):
+                del waiting[key]  # verified or left — done
+                changed = True
+                continue
+            if info.get("escalated_at") is None:
+                if now - info.get("at", now) >= esc_s:
+                    mod = await self._dm_random_mod(guild, member, "pending")
+                    if mod is None:
+                        await self._escalate_to_log(guild, member, "pending")
+                    info["escalated_at"] = now
+                    info["mod_id"] = mod.id if mod else 0
+                    changed = True
+            elif not info.get("followed_up"):
+                if now - info["escalated_at"] >= fu_s:
+                    await self._followup_mod(guild, member, info.get("mod_id") or 0)
+                    info["followed_up"] = True
+                    changed = True
+        if changed:
+            await self.store.set(VERIFY_WAITING, waiting)
+
+    @verify_pending_loop.before_loop
+    async def _before_pending(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _followup_mod(self, guild: discord.Guild, member: discord.Member, mod_id: int) -> None:
+        """Nudge the moderator who was pinged but hasn't acted."""
+        content = f"are you still there? >:c — **{member}** is **still** waiting to be verified."
+        embed = self._escalation_embed(guild, member, "pending")
+        mod = guild.get_member(mod_id) if mod_id else None
+        if mod is not None:
+            try:
+                await mod.send(content=content, embed=embed, view=build_mod_view(guild.id, member.id))
+                return
+            except discord.HTTPException:
+                pass
+        # Original mod unreachable — try a fresh one, else the log channel.
+        if await self._dm_random_mod(guild, member, "pending") is None:
+            await self._escalate_to_log(guild, member, "pending")
 
     # ---- manual trigger --------------------------------------------------
 
