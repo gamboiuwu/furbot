@@ -37,6 +37,15 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
                                   "Birthday shoutout. {member} = mention, {server} = server name."),
     "birthday_timezone":         (str,   "America/New_York", "Timezone used to decide when it's someone's birthday."),
     "birthday_announce_hour":    (int,   8,     "Hour (0-23, in the birthday timezone) to post shoutouts & give the role."),
+    "birthday_promo_channel_id": (int,   0,     "Channel to periodically post the birthday-feature invite (e.g. #bot-commands)."),
+    "birthday_promo_days":       (int,   3,     "How often (days) to post the birthday-feature invite."),
+    "birthday_promo_message":    (str,
+        "Hey there! 🐾\n"
+        "If you want, you can let us know about your birthday so the bot can give you the "
+        "**Birthday role** when the time comes 🎉\n\n"
+        "Just type:\n`/birthday set [day] [month] [year]`\n\n"
+        "Totally optional—no pressure, but you'd get a shoutout for the day! >:3",
+        "The recurring birthday-feature invite message."),
 }
 
 

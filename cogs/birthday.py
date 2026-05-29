@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,7 @@ from discord.ext import commands, tasks
 log = logging.getLogger("furbot.birthday")
 
 BIRTHDAYS = "birthdays"  # {user_id_str: {"d": int, "m": int, "y": int|None}}
+PROMO_LAST = "birthday_promo_last"  # epoch of last invite post
 
 MONTHS = [
     "January", "February", "March", "April", "May", "June",
@@ -39,9 +41,11 @@ class Birthday(commands.Cog):
 
     async def cog_load(self) -> None:
         self.daily_check.start()
+        self.promo_loop.start()
 
     async def cog_unload(self) -> None:
         self.daily_check.cancel()
+        self.promo_loop.cancel()
 
     # ---- helpers ---------------------------------------------------------
 
@@ -134,6 +138,35 @@ class Birthday(commands.Cog):
 
     @daily_check.before_loop
     async def _before(self) -> None:
+        await self.bot.wait_until_ready()
+
+    # ---- recurring feature invite ---------------------------------------
+
+    @tasks.loop(hours=6)
+    async def promo_loop(self) -> None:
+        """Post the birthday-feature invite every `birthday_promo_days` days.
+        The last-post time is persisted so restarts/redeploys don't repost."""
+        ch_id = self._s("birthday_promo_channel_id")
+        if not ch_id:
+            return
+        channel = self.bot.get_channel(ch_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        days = self._s("birthday_promo_days") or 3
+        now = time.time()
+        if now - self.store.get(PROMO_LAST, 0) < days * 86400:
+            return
+        message = self._s("birthday_promo_message")
+        if not message:
+            return
+        try:
+            await channel.send(message)
+            await self.store.set(PROMO_LAST, int(now))
+        except discord.HTTPException:
+            log.exception("Failed to post birthday promo message")
+
+    @promo_loop.before_loop
+    async def _before_promo(self) -> None:
         await self.bot.wait_until_ready()
 
     # ---- commands --------------------------------------------------------
