@@ -64,7 +64,35 @@ class WaitingButton(
         if cog is None:
             await interaction.response.send_message("This isn't available right now.", ephemeral=True)
             return
-        await cog.handle_waiting(interaction, self.guild_id, self.user_id)
+        await cog.handle_waiting(interaction, self.guild_id, self.user_id, reason="waiting")
+
+
+class PhoneReviewButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ob:phone:v1:(?P<guild_id>\d+):(?P<user_id>\d+)",
+):
+    def __init__(self, guild_id: int, user_id: int) -> None:
+        self.guild_id = guild_id
+        self.user_id = user_id
+        super().__init__(
+            discord.ui.Button(
+                label="Can't verify my phone — request review",
+                emoji="📱",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"ob:phone:v1:{guild_id}:{user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["guild_id"]), int(match["user_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog: "Onboarding | None" = interaction.client.get_cog("Onboarding")
+        if cog is None:
+            await interaction.response.send_message("This isn't available right now.", ephemeral=True)
+            return
+        await cog.handle_waiting(interaction, self.guild_id, self.user_id, reason="phone")
 
 
 class ModActionButton(
@@ -350,14 +378,17 @@ class Onboarding(commands.Cog, MemberActions):
     async def _send_reminder(self, guild: discord.Guild, member: discord.Member) -> bool:
         view = discord.ui.View(timeout=None)
         view.add_item(WaitingButton(guild.id, member.id))
+        view.add_item(PhoneReviewButton(guild.id, member.id))
         text = (
             f"👋 Hi! Thanks for joining **{guild.name}**. It looks like you haven't been "
             f"verified yet. To get full access, please post in {self._verification_channel_mention()} "
             "and a moderator will approve you.\n"
+            "📱 Some servers also need a **verified phone number** on your Discord account. To add one: "
+            "**User Settings → My Account → Phone Number**, then enter the code Discord texts you.\n"
             f"⏰ **Heads up:** if you're not verified within the next "
             f"**{self._s('onboarding_kick_hours') - self._s('onboarding_reminder_hours')} hours**, "
             "you'll be removed — but you're always welcome to rejoin and try again.\n"
-            "Been waiting a while? Tap the button below and I'll nudge a moderator."
+            "Been waiting a while, or can't set up a phone? Tap a button below and I'll get a moderator."
         )
         if not await self._try_dm(member, text, view=view):
             return False
@@ -373,7 +404,9 @@ class Onboarding(commands.Cog, MemberActions):
 
     # ---- member "I'm waiting" button ------------------------------------
 
-    async def handle_waiting(self, interaction: discord.Interaction, guild_id: int, user_id: int) -> None:
+    async def handle_waiting(
+        self, interaction: discord.Interaction, guild_id: int, user_id: int, *, reason: str = "waiting"
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
         guild = self.bot.get_guild(guild_id)
         if guild is None:
@@ -399,33 +432,47 @@ class Onboarding(commands.Cog, MemberActions):
             await interaction.followup.send("A moderator has already been notified — hang tight!", ephemeral=True)
             return
 
-        mod = await self._dm_random_mod(guild, member)
+        mod = await self._dm_random_mod(guild, member, reason)
         if mod is None:
-            await self._escalate_to_log(guild, member)
+            await self._escalate_to_log(guild, member, reason)
 
         await self.store.update(
             lambda d: d.setdefault(ESCALATED, {}).__setitem__(
-                key, {"at": int(time.time()), "mod_id": mod.id if mod else 0}
+                key, {"at": int(time.time()), "mod_id": mod.id if mod else 0, "reason": reason}
             )
         )
-        await interaction.followup.send(
-            "✅ Thanks! I've let a moderator know you're waiting — someone will check on your "
-            "verification soon. Hang tight!",
-            ephemeral=True,
-        )
+        if reason == "phone":
+            ack = (
+                "✅ Thanks! I've asked a moderator to **manually review** your account because of the "
+                "phone-verification issue. Someone will follow up soon — hang tight!"
+            )
+        else:
+            ack = (
+                "✅ Thanks! I've let a moderator know you're waiting — someone will check on your "
+                "verification soon. Hang tight!"
+            )
+        await interaction.followup.send(ack, ephemeral=True)
 
-    def _escalation_embed(self, guild: discord.Guild, member: discord.Member) -> discord.Embed:
+    def _escalation_embed(self, guild: discord.Guild, member: discord.Member, reason: str = "waiting") -> discord.Embed:
         embed = build_userinfo_embed(
             member, floofs_role_id=self.config.floofs_role_id, title="🔔 Verification request"
         )
-        embed.description = (
-            f"**{member}** has been waiting **over {self._s('onboarding_reminder_hours')} hours** to be "
-            f"verified in **{guild.name}** and asked for help. Their message should be in "
-            f"{self._verification_channel_mention()}."
-        )
+        chan = self._verification_channel_mention()
+        if reason == "phone":
+            embed.description = (
+                f"📱 **{member}** says they **can't set up a verified phone number** and is asking for a "
+                f"**manual review** in **{guild.name}**. Please check {chan} and decide below."
+            )
+        else:
+            embed.description = (
+                f"**{member}** has been waiting **over {self._s('onboarding_reminder_hours')} hours** to be "
+                f"verified in **{guild.name}** and asked for help. Their message should be in {chan}."
+            )
         return embed
 
-    async def _dm_random_mod(self, guild: discord.Guild, member: discord.Member) -> discord.Member | None:
+    async def _dm_random_mod(
+        self, guild: discord.Guild, member: discord.Member, reason: str = "waiting"
+    ) -> discord.Member | None:
         import random
 
         role = guild.get_role(self.config.staff_role_id) if self.config.staff_role_id else None
@@ -433,7 +480,7 @@ class Onboarding(commands.Cog, MemberActions):
             return None
         candidates = [m for m in role.members if not m.bot]
         random.shuffle(candidates)
-        embed = self._escalation_embed(guild, member)
+        embed = self._escalation_embed(guild, member, reason)
         for mod in candidates[:5]:  # try a few in case some have DMs closed
             view = build_mod_view(guild.id, member.id)
             try:
@@ -443,7 +490,9 @@ class Onboarding(commands.Cog, MemberActions):
                 continue
         return None
 
-    async def _escalate_to_log(self, guild: discord.Guild, member: discord.Member) -> None:
+    async def _escalate_to_log(
+        self, guild: discord.Guild, member: discord.Member, reason: str = "waiting"
+    ) -> None:
         log_id = self.config.log_channel_id
         channel = self.bot.get_channel(log_id) if log_id else None
         if not isinstance(channel, discord.TextChannel):
@@ -454,7 +503,7 @@ class Onboarding(commands.Cog, MemberActions):
         )
         await channel.send(
             content=content,
-            embed=self._escalation_embed(guild, member),
+            embed=self._escalation_embed(guild, member, reason),
             view=build_mod_view(guild.id, member.id),
             allowed_mentions=discord.AllowedMentions(roles=True),
         )

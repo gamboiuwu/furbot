@@ -94,8 +94,8 @@ class FurBot(commands.Bot):
         # Register persistent button handlers so they keep working after a
         # restart. DynamicItems are registered by class; the batch view by
         # instance (its custom_ids are fixed).
-        from cogs.onboarding import BatchConfirmView, ModActionButton, WaitingButton
-        self.add_dynamic_items(WaitingButton, ModActionButton)
+        from cogs.onboarding import BatchConfirmView, ModActionButton, PhoneReviewButton, WaitingButton
+        self.add_dynamic_items(WaitingButton, PhoneReviewButton, ModActionButton)
         self.add_view(BatchConfirmView(self))
 
         # Register slash commands. If a guild ID is configured we sync to
