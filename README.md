@@ -16,10 +16,23 @@ A Discord bot for the **NYFurs** server and staff team, built with
 - **`/verify @member`** — a manual fallback for staff to verify someone
   directly (requires the *Manage Roles* permission).
 - **`/userinfo @member`** — account age, join date, roles, and verified
-  status; flags accounts under a week old (handy for vetting). Staff only.
+  status; flags accounts under a week old (handy for vetting).
+- **`/stats`** — verification totals (verified / rejected / warned).
 - **`/help`** — lists everything the bot can do.
 - **`/floofcount`** — shows how many members have the Floofs role.
 - **`/ping`** — quick health check.
+
+All commands are **staff only** (configured staff role, or Manage Roles).
+
+### Storage / persistence
+
+The bot keeps a small amount of data — pending cooldowns, an audit log of
+staff actions, and stats. By default this lives in local files under
+`DATA_DIR`. To make it survive Railway redeploys, point it at your own
+Nextcloud server over WebDAV by setting `WEBDAV_URL`, `WEBDAV_USERNAME`, and
+`WEBDAV_PASSWORD` (use a Nextcloud **app password**, not your account
+password). If Nextcloud is unreachable, the bot logs it and keeps working
+off the local copy.
 
 The code is organized into "cogs" (feature modules) under `cogs/`, so adding
 new staff tools later is straightforward.

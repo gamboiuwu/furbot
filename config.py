@@ -53,10 +53,20 @@ class Config:
     # Optional channel to log staff actions to.
     log_channel_id: int | None
 
-    # Where to persist data that must survive restarts (e.g. pending unbans).
-    # On Railway, attach a Volume and set DATA_DIR to its mount path so the
-    # cooldown list isn't lost on redeploy.
+    # Where to keep the local copy of persisted data (cooldowns, audit log,
+    # stats). Used as a fallback and working cache.
     data_dir: str
+
+    # Optional Nextcloud (WebDAV) backing for persistence. If all three are
+    # set, the bot stores its data on your Nextcloud server so it survives
+    # Railway redeploys. If unset, it just uses local files in data_dir.
+    webdav_url: str | None
+    webdav_username: str | None
+    webdav_password: str | None
+
+    @property
+    def webdav_enabled(self) -> bool:
+        return bool(self.webdav_url and self.webdav_username and self.webdav_password)
 
     @classmethod
     def load(cls) -> "Config":
@@ -90,4 +100,7 @@ class Config:
             reject_cooldown_hours=_get_int("REJECT_COOLDOWN_HOURS") or 24,
             log_channel_id=_get_int("LOG_CHANNEL_ID"),
             data_dir=os.getenv("DATA_DIR", "data").strip() or "data",
+            webdav_url=os.getenv("WEBDAV_URL", "").strip() or None,
+            webdav_username=os.getenv("WEBDAV_USERNAME", "").strip() or None,
+            webdav_password=os.getenv("WEBDAV_PASSWORD", "").strip() or None,
         )

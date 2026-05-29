@@ -14,6 +14,8 @@ import discord
 from discord.ext import commands
 
 from config import Config
+from store import Store
+from webdav import WebDAVClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +47,30 @@ class FurBot(commands.Bot):
         )
         self.config = config
 
+        # Shared persistence. Backed by Nextcloud (WebDAV) if configured,
+        # otherwise local files in DATA_DIR.
+        webdav = None
+        if config.webdav_enabled:
+            webdav = WebDAVClient(config.webdav_url, config.webdav_username, config.webdav_password)
+        self.store = Store(
+            local_path=f"{config.data_dir}/furbot-state.json",
+            remote_name="furbot-state.json",
+            webdav=webdav,
+        )
+
     async def setup_hook(self) -> None:
+        # Prepare persistence before any cog needs it.
+        if self.store.webdav:
+            try:
+                await self.store.webdav.ensure_base()
+                ok = await self.store.webdav.check()
+                log.info("Nextcloud storage %s.", "connected" if ok else "NOT reachable (using local fallback)")
+            except Exception:
+                log.exception("Nextcloud setup failed; using local fallback.")
+        else:
+            log.info("Nextcloud not configured; using local files in %s.", self.config.data_dir)
+        await self.store.load()
+
         # Load every feature module.
         for cog in INITIAL_COGS:
             try:

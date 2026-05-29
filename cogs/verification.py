@@ -21,19 +21,21 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from checks import NotStaff, is_staff
-from store import JsonStore
 
 log = logging.getLogger("furbot.verification")
 
-# Key in the store holding pending unbans: {"guild_id:user_id": unban_at_epoch}.
-PENDING_UNBANS = "pending_unbans"
+# Keys in the shared store.
+PENDING_UNBANS = "pending_unbans"  # {"guild_id:user_id": unban_at_epoch}
+STATS = "stats"                    # {"verified": n, "rejected": n, "warned": n}
+AUDIT = "audit"                    # list of recent action records (capped)
+AUDIT_CAP = 1000
 
 
 class Verification(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.config = bot.config
-        self.store = JsonStore(f"{self.config.data_dir}/verification.json")
+        self.store = bot.store
 
     async def cog_load(self) -> None:
         self.process_unbans.start()
@@ -78,6 +80,26 @@ class Verification(commands.Cog):
         except discord.HTTPException:
             pass
 
+    @staticmethod
+    def _bump_and_audit(
+        data: dict, action: str, member: discord.Member, by: discord.Member
+    ) -> None:
+        """Mutator: increment the action's counter and append an audit entry."""
+        stats = data.setdefault(STATS, {})
+        stats[action] = stats.get(action, 0) + 1
+        audit = data.setdefault(AUDIT, [])
+        audit.append({
+            "action": action,
+            "user_id": member.id, "user": str(member),
+            "by_id": by.id, "by": str(by),
+            "at": int(time.time()),
+        })
+        if len(audit) > AUDIT_CAP:
+            del audit[: len(audit) - AUDIT_CAP]
+
+    async def _record(self, action: str, member: discord.Member, by: discord.Member) -> None:
+        await self.store.update(lambda d: self._bump_and_audit(d, action, member, by))
+
     # ---- approve ---------------------------------------------------------
 
     async def _grant_floofs(
@@ -100,6 +122,7 @@ class Verification(commands.Cog):
             f"Welcome to **{member.guild.name}**! You've been verified and given "
             f"the **{role.name}** role. 🐾",
         )
+        await self._record("verified", member, by)
         return True
 
     # ---- reject (temp-ban with cooldown) ---------------------------------
@@ -134,9 +157,12 @@ class Verification(commands.Cog):
             return
 
         unban_at = time.time() + hours * 3600
-        pending = self.store.get(PENDING_UNBANS, {})
-        pending[f"{guild.id}:{member.id}"] = unban_at
-        self.store.set(PENDING_UNBANS, pending)
+
+        def _mutate(data: dict) -> None:
+            data.setdefault(PENDING_UNBANS, {})[f"{guild.id}:{member.id}"] = unban_at
+            self._bump_and_audit(data, "rejected", member, by)
+
+        await self.store.update(_mutate)
 
         log.info("Rejected (temp-banned) %s for %sh (by %s)", member, hours, by)
         await self._log_action(
@@ -159,6 +185,7 @@ class Verification(commands.Cog):
             f"⚠️ **{member.display_name}** was warned by **{by.display_name}** "
             "to redo their verification."
         )
+        await self._record("warned", member, by)
 
     # ---- reaction dispatch ----------------------------------------------
 
@@ -239,7 +266,7 @@ class Verification(commands.Cog):
             del pending[key]
             changed = True
         if changed:
-            self.store.set(PENDING_UNBANS, pending)
+            await self.store.set(PENDING_UNBANS, pending)
 
     @process_unbans.before_loop
     async def _before_unbans(self) -> None:

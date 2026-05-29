@@ -52,6 +52,7 @@ class General(commands.Cog):
                 "**/floofcount** — how many members have the Floofs role\n"
                 "**/verify @member** — manually give someone the Floofs role\n"
                 "**/userinfo @member** — account age, join date & roles (vetting)\n"
+                "**/stats** — verification totals (verified / rejected / warned)\n"
                 "**/roles** — list every role with its ID (for setup)"
             ),
             inline=False,
@@ -113,6 +114,18 @@ class General(commands.Cog):
             value=", ".join(roles) if roles else "None",
             inline=False,
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="stats", description="Show verification totals (verified / rejected / warned).")
+    @is_staff()
+    async def stats(self, interaction: discord.Interaction) -> None:
+        data = self.bot.store.get("stats", {})
+        embed = discord.Embed(title="📊 Verification stats", color=discord.Color.blurple())
+        embed.add_field(name="✅ Verified", value=str(data.get("verified", 0)))
+        embed.add_field(name="⛔ Rejected", value=str(data.get("rejected", 0)))
+        embed.add_field(name="⚠️ Warned", value=str(data.get("warned", 0)))
+        storage = "Nextcloud" if self.bot.config.webdav_enabled else "local files"
+        embed.set_footer(text=f"Stored on: {storage}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="ping", description="Check that the bot is alive and see its latency.")
