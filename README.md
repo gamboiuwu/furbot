@@ -5,12 +5,19 @@ A Discord bot for the **NYFurs** server and staff team, built with
 
 ## What it does today
 
-- **Reaction verification** — when a staff member adds the approval emoji
-  (default ✅) to a message in the verification channel, the author of that
-  message is automatically given the **Floofs** role, gets a welcome DM, and
-  the action is logged.
+- **Reaction verification** — in the verification channel, a staff member
+  reacts to a new member's message to act on it:
+  - ✅ (`APPROVAL_EMOJI`) → gives the member the **Floofs** role + welcome DM
+  - ❌ (`REJECT_EMOJI`) → DMs the member, then temp-bans them for a cooldown
+    (default 24h) and auto-unbans when it expires
+  - ⚠️ (`WARN_EMOJI`) → DMs the member that something was wrong with how they
+    verified and to try again
+  All actions are logged to the log channel (no pings).
 - **`/verify @member`** — a manual fallback for staff to verify someone
   directly (requires the *Manage Roles* permission).
+- **`/userinfo @member`** — account age, join date, roles, and verified
+  status; flags accounts under a week old (handy for vetting). Staff only.
+- **`/help`** — lists everything the bot can do.
 - **`/floofcount`** — shows how many members have the Floofs role.
 - **`/ping`** — quick health check.
 
@@ -28,8 +35,9 @@ new staff tools later is straightforward.
    - **Message Content Intent**
 4. Open the **OAuth2 → URL Generator** tab:
    - Scopes: `bot` and `applications.commands`
-   - Bot permissions: **Manage Roles**, **Read Messages/View Channels**,
-     **Send Messages**, **Read Message History**, **Add Reactions**.
+   - Bot permissions: **Manage Roles**, **Ban Members** (for the reject
+     cooldown), **Read Messages/View Channels**, **Send Messages**,
+     **Read Message History**, **Add Reactions**.
 5. Open the generated URL and invite the bot to the NYFurs server.
 
 > **Important:** in your server's role list, drag the bot's role **above** the

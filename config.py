@@ -45,18 +45,38 @@ class Config:
     verification_channel_id: int | None
     floofs_role_id: int | None
     staff_role_id: int | None
-    approval_emoji: str
+    approval_emoji: str   # staff reacts with this to APPROVE -> grant Floofs
+    reject_emoji: str     # staff reacts with this to REJECT -> temp-ban + DM
+    warn_emoji: str       # staff reacts with this to WARN -> DM "redo verification"
+    reject_cooldown_hours: int  # how long a rejected user is banned before auto-unban
 
     # Optional channel to log staff actions to.
     log_channel_id: int | None
+
+    # Where to persist data that must survive restarts (e.g. pending unbans).
+    # On Railway, attach a Volume and set DATA_DIR to its mount path so the
+    # cooldown list isn't lost on redeploy.
+    data_dir: str
 
     @classmethod
     def load(cls) -> "Config":
         token = os.getenv("DISCORD_TOKEN", "").strip()
         if not token:
+            # Help diagnose hosting setups: list which of OUR expected
+            # variables the environment actually passed in (names only —
+            # never the secret values themselves).
+            expected = [
+                "DISCORD_TOKEN", "GUILD_ID", "VERIFICATION_CHANNEL_ID",
+                "FLOOFS_ROLE_ID", "STAFF_ROLE_ID", "APPROVAL_EMOJI", "LOG_CHANNEL_ID",
+            ]
+            present = [name for name in expected if os.getenv(name, "").strip()]
+            detected = ", ".join(present) if present else "(none)"
             raise RuntimeError(
-                "DISCORD_TOKEN is not set. Copy .env.example to .env and fill it in, "
-                "or set it in your host's environment variables."
+                "DISCORD_TOKEN is not set. The bot can't log in without it.\n"
+                f"  Variables this container actually received: {detected}\n"
+                "  Fix: in your host (e.g. Railway > your service > Variables), make sure a\n"
+                "  variable named exactly DISCORD_TOKEN exists, then click Deploy/Apply so the\n"
+                "  change takes effect. Make sure you're editing the bot service, not a different one."
             )
         return cls(
             token=token,
@@ -65,5 +85,9 @@ class Config:
             floofs_role_id=_get_int("FLOOFS_ROLE_ID"),
             staff_role_id=_get_int("STAFF_ROLE_ID"),
             approval_emoji=os.getenv("APPROVAL_EMOJI", "✅").strip() or "✅",
+            reject_emoji=os.getenv("REJECT_EMOJI", "❌").strip() or "❌",
+            warn_emoji=os.getenv("WARN_EMOJI", "⚠️").strip() or "⚠️",
+            reject_cooldown_hours=_get_int("REJECT_COOLDOWN_HOURS") or 24,
             log_channel_id=_get_int("LOG_CHANNEL_ID"),
+            data_dir=os.getenv("DATA_DIR", "data").strip() or "data",
         )
