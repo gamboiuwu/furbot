@@ -69,6 +69,45 @@ class FurBot(commands.Bot):
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id: %s)", self.user, self.user.id if self.user else "?")
         await self.change_presence(activity=discord.Game(name="watching over NYFurs 🐾"))
+        self._log_config_check()
+
+    def _log_config_check(self) -> None:
+        """Print, to the logs, each configured ID and whether it actually
+        resolves to a real role/channel in the server. Makes "wrong ID"
+        misconfiguration obvious at a glance."""
+        cfg = self.config
+        guild = self.get_guild(cfg.guild_id) if cfg.guild_id else (self.guilds[0] if self.guilds else None)
+        if guild is None:
+            log.warning("CONFIG CHECK: bot is not in any guild yet — skipping ID validation.")
+            return
+
+        log.info("CONFIG CHECK in guild '%s' (id: %s):", guild.name, guild.id)
+
+        def check_role(label: str, role_id: int | None) -> None:
+            if not role_id:
+                log.info("  %s: (not set)", label)
+                return
+            role = guild.get_role(role_id)
+            if role:
+                log.info("  %s=%s -> OK ('%s')", label, role_id, role.name)
+            else:
+                log.warning("  %s=%s -> NOT FOUND (no role with this ID in the server!)", label, role_id)
+
+        def check_channel(label: str, channel_id: int | None) -> None:
+            if not channel_id:
+                log.info("  %s: (not set)", label)
+                return
+            channel = guild.get_channel(channel_id)
+            if channel:
+                log.info("  %s=%s -> OK ('#%s')", label, channel_id, channel.name)
+            else:
+                log.warning("  %s=%s -> NOT FOUND (no channel with this ID in the server!)", label, channel_id)
+
+        check_channel("VERIFICATION_CHANNEL_ID", cfg.verification_channel_id)
+        check_role("FLOOFS_ROLE_ID", cfg.floofs_role_id)
+        check_role("STAFF_ROLE_ID", cfg.staff_role_id)
+        check_channel("LOG_CHANNEL_ID", cfg.log_channel_id)
+        log.info("CONFIG CHECK complete. Fix any 'NOT FOUND' values in your host's Variables.")
 
 
 async def main() -> None:
