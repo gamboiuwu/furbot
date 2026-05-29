@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,28 @@ from typing import Any
 from webdav import WebDAVClient
 
 log = logging.getLogger("furbot.store")
+
+
+def _ensure_writable_dir(path: Path) -> Path:
+    """Make sure `path`'s parent exists and is writable. If it can't be
+    created/written (e.g. a non-root container can't write the working dir),
+    fall back to a temp directory instead of crashing."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        probe = path.parent / ".write_test"
+        probe.write_text("ok")
+        probe.unlink()
+        return path
+    except OSError:
+        fallback_dir = Path(tempfile.gettempdir()) / "furbot"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback = fallback_dir / path.name
+        log.warning(
+            "Data dir %s is not writable; using temporary %s instead. "
+            "Set DATA_DIR to a writable path (or configure Nextcloud) for durability.",
+            path.parent, fallback_dir,
+        )
+        return fallback
 
 
 class Store:
@@ -29,8 +52,7 @@ class Store:
         remote_name: str,
         webdav: WebDAVClient | None = None,
     ) -> None:
-        self.local_path = Path(local_path)
-        self.local_path.parent.mkdir(parents=True, exist_ok=True)
+        self.local_path = _ensure_writable_dir(Path(local_path))
         self.remote_name = remote_name
         self.webdav = webdav
         self._data: dict[str, Any] = {}
