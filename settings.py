@@ -39,6 +39,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "birthday_announce_hour":    (int,   8,     "Hour (0-23, in the birthday timezone) to post shoutouts & give the role."),
     "birthday_promo_channel_id": (int,   0,     "Channel to periodically post the birthday-feature invite (e.g. #bot-commands)."),
     "birthday_promo_days":       (int,   3,     "How often (days) to post the birthday-feature invite."),
+    "leaderboard_channel_id":    (int,   0,     "Channel for the month-end staff congratulations (defaults to the log channel)."),
     "birthday_promo_message":    (str,
         "Hey there! 🐾\n"
         "If you want, you can let us know about your birthday so the bot can give you the "

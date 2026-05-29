@@ -9,8 +9,11 @@ stats/audit. This avoids duplicated logic drifting between cogs.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import time
+from datetime import timezone
+from zoneinfo import ZoneInfo
 
 import discord
 
@@ -20,6 +23,16 @@ log = logging.getLogger("furbot.actions")
 STATS = "stats"          # {"verified": n, "rejected": n, "warned": n, ...}
 AUDIT = "audit"          # list of recent action records (capped)
 AUDIT_CAP = 1000
+STAFF_MONTHLY = "staff_monthly"  # {"YYYY-MM": {staff_id: {action: n, "name": str}}}
+
+
+def month_key(now: datetime.datetime | None = None, tz_name: str = "America/New_York") -> str:
+    if now is None:
+        try:
+            now = datetime.datetime.now(ZoneInfo(tz_name))
+        except Exception:
+            now = datetime.datetime.now(timezone.utc)
+    return now.strftime("%Y-%m")
 
 
 def build_userinfo_embed(
@@ -116,6 +129,13 @@ class MemberActions:
         })
         if len(audit) > AUDIT_CAP:
             del audit[: len(audit) - AUDIT_CAP]
+
+        # Per-staff monthly leaderboard counts (skip automated/bot actors).
+        if not getattr(by, "bot", False):
+            bucket = data.setdefault(STAFF_MONTHLY, {}).setdefault(month_key(), {})
+            rec = bucket.setdefault(str(by.id), {})
+            rec[action] = rec.get(action, 0) + 1
+            rec["name"] = getattr(by, "display_name", str(by))
 
     async def _record(self, action: str, member: discord.Member, by: discord.Member) -> None:
         await self.store.update(lambda d: self._bump_and_audit(d, action, member, by))

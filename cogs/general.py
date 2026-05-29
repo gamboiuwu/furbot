@@ -54,6 +54,7 @@ class General(commands.Cog):
                 "**/verify @member** — manually give someone the Floofs role\n"
                 "**/userinfo @member** — account age, join date & roles (vetting)\n"
                 "**/stats** — verification totals\n"
+                "**/leaderboard** — staff verification leaderboard for the month\n"
                 "**/roles** — list every role with its ID (for setup)\n"
                 "**/config view·set·reset** — change bot settings (saved to Nextcloud)\n"
                 "**/onboarding_sweep** — scan unverified members & post a staff summary"

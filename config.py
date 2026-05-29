@@ -107,6 +107,7 @@ class Config:
     birthday_promo_channel_id: int | None
     birthday_promo_days: int | None
     birthday_promo_message: str | None
+    leaderboard_channel_id: int | None
 
     @property
     def webdav_enabled(self) -> bool:
@@ -168,4 +169,5 @@ class Config:
             birthday_promo_channel_id=_get_int("BIRTHDAY_PROMO_CHANNEL_ID"),
             birthday_promo_days=_get_int("BIRTHDAY_PROMO_DAYS"),
             birthday_promo_message=os.getenv("BIRTHDAY_PROMO_MESSAGE", "").strip() or None,
+            leaderboard_channel_id=_get_int("LEADERBOARD_CHANNEL_ID"),
         )

@@ -39,6 +39,7 @@ INITIAL_COGS = (
     "cogs.config",
     "cogs.onboarding",
     "cogs.birthday",
+    "cogs.leaderboard",
 )
 
 
