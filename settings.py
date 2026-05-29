@@ -31,6 +31,11 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "welcome_channel_id":        (int,   863527523757588486, "Channel where a welcome is posted when someone is verified."),
     "welcome_message":           (str,   "🎉 Everyone please welcome {member} to **{server}**! So glad you're here. 🐾",
                                   "Welcome message. {member} = mention, {server} = server name."),
+    "birthday_role_id":          (int,   0,     "Role given to members on their birthday."),
+    "birthday_channel_id":       (int,   0,     "Channel where birthday shoutouts are posted (e.g. general)."),
+    "birthday_message":          (str,   "🎉🎂 Happy birthday {member}! Everyone give them some love today! 🐾",
+                                  "Birthday shoutout. {member} = mention, {server} = server name."),
+    "birthday_timezone":         (str,   "America/New_York", "Timezone used to decide when it's someone's birthday."),
 }
 
 

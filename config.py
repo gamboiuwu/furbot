@@ -99,6 +99,10 @@ class Config:
     invite_link: str | None
     welcome_channel_id: int | None
     welcome_message: str | None
+    birthday_role_id: int | None
+    birthday_channel_id: int | None
+    birthday_message: str | None
+    birthday_timezone: str | None
 
     @property
     def webdav_enabled(self) -> bool:
@@ -152,4 +156,8 @@ class Config:
             invite_link=os.getenv("INVITE_LINK", "").strip() or None,
             welcome_channel_id=_get_int("WELCOME_CHANNEL_ID"),
             welcome_message=os.getenv("WELCOME_MESSAGE", "").strip() or None,
+            birthday_role_id=_get_int("BIRTHDAY_ROLE_ID"),
+            birthday_channel_id=_get_int("BIRTHDAY_CHANNEL_ID"),
+            birthday_message=os.getenv("BIRTHDAY_MESSAGE", "").strip() or None,
+            birthday_timezone=os.getenv("BIRTHDAY_TIMEZONE", "").strip() or None,
         )

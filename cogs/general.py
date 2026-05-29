@@ -82,6 +82,14 @@ class General(commands.Cog):
             ),
             inline=False,
         )
+        embed.add_field(
+            name="🎂 Birthdays (everyone)",
+            value=(
+                "**/birthday set [day] [month] [year]** — save your birthday for a shoutout + the Birthday role\n"
+                "**/birthday view** · **/birthday clear**"
+            ),
+            inline=False,
+        )
         embed.set_footer(text="Only you can see this message.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

@@ -38,6 +38,7 @@ INITIAL_COGS = (
     "cogs.verification",
     "cogs.config",
     "cogs.onboarding",
+    "cogs.birthday",
 )
 
 
