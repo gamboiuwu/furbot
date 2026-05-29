@@ -66,8 +66,14 @@ class Store:
             try:
                 raw = await self.webdav.download(self.remote_name)
                 if raw:
-                    data = json.loads(raw.decode("utf-8"))
-                    log.info("Loaded %s from Nextcloud.", self.remote_name)
+                    try:
+                        data = json.loads(raw.decode("utf-8"))
+                        log.info("Loaded %s from Nextcloud.", self.remote_name)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        log.warning(
+                            "Nextcloud returned a non-JSON body for %s (first 80 bytes: %r); "
+                            "using local copy.", self.remote_name, raw[:80],
+                        )
             except Exception:
                 log.exception("Nextcloud load failed for %s; falling back to local copy.", self.remote_name)
         if data is None:
