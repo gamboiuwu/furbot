@@ -1,0 +1,69 @@
+"""Central configuration for FurBot.
+
+All settings are read from environment variables so that nothing
+sensitive (or server-specific) is hard-coded into the source. For local
+development you can put these in a `.env` file (see `.env.example`); in
+production you set them in your host's dashboard / secrets manager.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+try:
+    # Optional: only needed for local development. In production the host
+    # injects real environment variables, so this import failing is fine.
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:  # pragma: no cover
+    pass
+
+
+def _get_int(name: str) -> int | None:
+    """Read an environment variable as an int, or None if unset/blank."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"Environment variable {name} must be a number, got: {raw!r}")
+
+
+@dataclass(frozen=True)
+class Config:
+    # Required: the bot's login token from the Discord Developer Portal.
+    token: str
+
+    # Your server (guild) ID. Used to register slash commands instantly
+    # instead of waiting up to an hour for global propagation.
+    guild_id: int | None
+
+    # Verification flow.
+    verification_channel_id: int | None
+    floofs_role_id: int | None
+    staff_role_id: int | None
+    approval_emoji: str
+
+    # Optional channel to log staff actions to.
+    log_channel_id: int | None
+
+    @classmethod
+    def load(cls) -> "Config":
+        token = os.getenv("DISCORD_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError(
+                "DISCORD_TOKEN is not set. Copy .env.example to .env and fill it in, "
+                "or set it in your host's environment variables."
+            )
+        return cls(
+            token=token,
+            guild_id=_get_int("GUILD_ID"),
+            verification_channel_id=_get_int("VERIFICATION_CHANNEL_ID"),
+            floofs_role_id=_get_int("FLOOFS_ROLE_ID"),
+            staff_role_id=_get_int("STAFF_ROLE_ID"),
+            approval_emoji=os.getenv("APPROVAL_EMOJI", "✅").strip() or "✅",
+            log_channel_id=_get_int("LOG_CHANNEL_ID"),
+        )
