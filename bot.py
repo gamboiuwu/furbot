@@ -55,11 +55,7 @@ class FurBot(commands.Bot):
         webdav = None
         if config.webdav_enabled:
             webdav = WebDAVClient(config.webdav_url, config.webdav_username, config.webdav_password)
-        self.store = Store(
-            local_path=f"{config.data_dir}/furbot-state.json",
-            remote_name="furbot-state.json",
-            webdav=webdav,
-        )
+        self.store = Store(local_dir=config.data_dir, webdav=webdav)
         # Runtime settings, persisted to the store and editable via /config.
         self.settings = Settings(self.store, config)
 

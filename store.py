@@ -1,11 +1,16 @@
-"""Persistent JSON store with an optional Nextcloud (WebDAV) backing.
+"""Persistent store backed by Nextcloud (WebDAV), with a local cache.
+
+Each top-level dataset is saved as its **own JSON file** inside the configured
+folder — e.g. `settings.json`, `stats.json`, `audit.json`, `pending_unbans.json`,
+`onboarding.reminded.json` — both locally (in DATA_DIR) and on Nextcloud. This
+makes the data inspectable in your Bot Data folder rather than one opaque blob.
 
 Behaviour:
-  * Always keeps a local copy in DATA_DIR (fast, and a fallback).
-  * If a WebDAV client is supplied, loads from Nextcloud on startup and
-    uploads after every change, so data survives Railway redeploys.
-  * If Nextcloud is unreachable, it logs and keeps working off the local
-    copy — a reject/verify never fails because storage hiccupped.
+  * On startup, load every `*.json` from Nextcloud (falling back to the local
+    copies if Nextcloud is unreachable).
+  * After each change, upload only the file(s) that actually changed.
+  * Migrates the previous single `furbot-state.json` into per-key files once.
+  * If the local dir isn't writable, fall back to a temp dir instead of crashing.
 """
 
 from __future__ import annotations
@@ -21,89 +26,155 @@ from webdav import WebDAVClient
 
 log = logging.getLogger("furbot.store")
 
+# The old combined file we migrate away from.
+LEGACY_KEY = "furbot-state"
+
 
 def _ensure_writable_dir(path: Path) -> Path:
-    """Make sure `path`'s parent exists and is writable. If it can't be
-    created/written (e.g. a non-root container can't write the working dir),
-    fall back to a temp directory instead of crashing."""
+    """Make sure `path` exists and is writable; otherwise fall back to a temp
+    directory instead of crashing (e.g. a non-root container can't write /app)."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        probe = path.parent / ".write_test"
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_test"
         probe.write_text("ok")
         probe.unlink()
         return path
     except OSError:
-        fallback_dir = Path(tempfile.gettempdir()) / "furbot"
-        fallback_dir.mkdir(parents=True, exist_ok=True)
-        fallback = fallback_dir / path.name
+        fallback = Path(tempfile.gettempdir()) / "furbot"
+        fallback.mkdir(parents=True, exist_ok=True)
         log.warning(
             "Data dir %s is not writable; using temporary %s instead. "
             "Set DATA_DIR to a writable path (or configure Nextcloud) for durability.",
-            path.parent, fallback_dir,
+            path, fallback,
         )
         return fallback
 
 
 class Store:
-    def __init__(
-        self,
-        *,
-        local_path: str | Path,
-        remote_name: str,
-        webdav: WebDAVClient | None = None,
-    ) -> None:
-        self.local_path = _ensure_writable_dir(Path(local_path))
-        self.remote_name = remote_name
+    def __init__(self, *, local_dir: str | Path, webdav: WebDAVClient | None = None) -> None:
+        self.local_dir = _ensure_writable_dir(Path(local_dir))
         self.webdav = webdav
         self._data: dict[str, Any] = {}
 
-    # ---- loading / saving ------------------------------------------------
+    # ---- paths -----------------------------------------------------------
+
+    def _fname(self, key: str) -> str:
+        return f"{key}.json"
+
+    def _local(self, key: str) -> Path:
+        return self.local_dir / self._fname(key)
+
+    @staticmethod
+    def _dump(value: Any) -> bytes:
+        return json.dumps(value, indent=2).encode("utf-8")
+
+    # ---- loading ---------------------------------------------------------
 
     async def load(self) -> None:
-        """Populate from Nextcloud if available, else from the local file."""
-        data: dict[str, Any] | None = None
+        data: dict[str, Any] = {}
+        loaded_remote = False
         if self.webdav:
             try:
-                raw = await self.webdav.download(self.remote_name)
-                if raw:
-                    try:
-                        data = json.loads(raw.decode("utf-8"))
-                        log.info("Loaded %s from Nextcloud.", self.remote_name)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        log.warning(
-                            "Nextcloud returned a non-JSON body for %s (first 80 bytes: %r); "
-                            "using local copy.", self.remote_name, raw[:80],
-                        )
+                for name in await self.webdav.list_json():
+                    key = name[:-5]  # strip ".json"
+                    if key == LEGACY_KEY:
+                        continue
+                    raw = await self.webdav.download(name)
+                    if raw:
+                        try:
+                            data[key] = json.loads(raw.decode("utf-8"))
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            log.warning("Skipping non-JSON Nextcloud file %s", name)
+                loaded_remote = True
+                log.info("Loaded %d data file(s) from Nextcloud.", len(data))
             except Exception:
-                log.exception("Nextcloud load failed for %s; falling back to local copy.", self.remote_name)
-        if data is None:
-            data = self._read_local()
+                log.exception("Nextcloud load failed; falling back to local copies.")
+        if not loaded_remote:
+            for p in self.local_dir.glob("*.json"):
+                if p.stem == LEGACY_KEY:
+                    continue
+                try:
+                    data[p.stem] = json.loads(p.read_text("utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    log.warning("Skipping unreadable local file %s", p)
+
         self._data = data
-        self._write_local()  # keep local copy fresh
+        await self._migrate_legacy()
+        self._write_all_local()
 
-    def _read_local(self) -> dict[str, Any]:
-        if not self.local_path.exists():
-            return {}
-        try:
-            return json.loads(self.local_path.read_text("utf-8"))
-        except (json.JSONDecodeError, OSError):
-            log.exception("Could not read %s; starting empty.", self.local_path)
-            return {}
-
-    def _write_local(self) -> None:
-        tmp = self.local_path.with_suffix(self.local_path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self._data, indent=2), "utf-8")
-        tmp.replace(self.local_path)
-
-    async def _persist(self) -> None:
-        self._write_local()
+    async def _migrate_legacy(self) -> None:
+        """Fold a previous single furbot-state.json into per-key files, once."""
+        legacy: dict | None = None
         if self.webdav:
             try:
-                await self.webdav.upload(
-                    self.remote_name, json.dumps(self._data, indent=2).encode("utf-8")
-                )
+                raw = await self.webdav.download(self._fname(LEGACY_KEY))
+                if raw:
+                    legacy = json.loads(raw.decode("utf-8"))
             except Exception:
-                log.exception("Nextcloud upload failed for %s; kept local copy.", self.remote_name)
+                legacy = None
+        if legacy is None:
+            p = self._local(LEGACY_KEY)
+            if p.exists():
+                try:
+                    legacy = json.loads(p.read_text("utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    legacy = None
+        if not legacy:
+            return
+
+        # Existing per-key files win over the old combined values.
+        added = False
+        for k, v in legacy.items():
+            if k not in self._data:
+                self._data[k] = v
+                added = True
+        if added:
+            log.info("Migrated legacy furbot-state.json into per-key files.")
+        for k in list(self._data.keys()):
+            await self._persist_key(k)
+        # Remove the legacy file now that per-key files are written.
+        if self.webdav:
+            try:
+                await self.webdav.delete(self._fname(LEGACY_KEY))
+            except Exception:
+                log.exception("Could not delete legacy file on Nextcloud")
+        try:
+            self._local(LEGACY_KEY).unlink()
+        except OSError:
+            pass
+
+    # ---- local writes ----------------------------------------------------
+
+    def _write_local(self, key: str) -> None:
+        path = self._local(key)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self._data[key], indent=2), "utf-8")
+        tmp.replace(path)
+
+    def _write_all_local(self) -> None:
+        for key in self._data:
+            self._write_local(key)
+
+    # ---- persistence (local + remote) -----------------------------------
+
+    async def _persist_key(self, key: str) -> None:
+        self._write_local(key)
+        if self.webdav:
+            try:
+                await self.webdav.upload(self._fname(key), self._dump(self._data[key]))
+            except Exception:
+                log.exception("Nextcloud upload failed for %s; kept local copy.", self._fname(key))
+
+    async def _delete_key_files(self, key: str) -> None:
+        try:
+            self._local(key).unlink()
+        except OSError:
+            pass
+        if self.webdav:
+            try:
+                await self.webdav.delete(self._fname(key))
+            except Exception:
+                log.exception("Nextcloud delete failed for %s", self._fname(key))
 
     # ---- reads (sync, from memory) --------------------------------------
 
@@ -114,14 +185,20 @@ class Store:
 
     async def set(self, key: str, value: Any) -> None:
         self._data[key] = value
-        await self._persist()
+        await self._persist_key(key)
 
     async def delete(self, key: str) -> None:
         if key in self._data:
             del self._data[key]
-            await self._persist()
+            await self._delete_key_files(key)
 
     async def update(self, mutator: Callable[[dict[str, Any]], None]) -> None:
-        """Apply several changes atomically, then persist once."""
+        """Apply several changes, then persist only the files that changed."""
+        before = {k: json.dumps(v, sort_keys=True) for k, v in self._data.items()}
         mutator(self._data)
-        await self._persist()
+        after_keys = set(self._data.keys())
+        for key in set(before) - after_keys:        # removed
+            await self._delete_key_files(key)
+        for key in after_keys:                       # new or changed
+            if key not in before or before[key] != json.dumps(self._data[key], sort_keys=True):
+                await self._persist_key(key)

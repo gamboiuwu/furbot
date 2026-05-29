@@ -11,6 +11,7 @@ We only need: download a file, upload a file, and ensure the target folder
 from __future__ import annotations
 
 import logging
+import re
 from urllib.parse import unquote
 
 import aiohttp
@@ -76,6 +77,27 @@ class WebDAVClient:
         async with self._session() as s:
             async with s.put(self.base / name, data=data) as r:
                 r.raise_for_status()
+
+    async def delete(self, name: str) -> None:
+        async with self._session() as s:
+            async with s.delete(self.base / name) as r:
+                if r.status not in (200, 204, 404):
+                    r.raise_for_status()
+
+    async def list_json(self) -> list[str]:
+        """List the `.json` file names directly inside the base folder."""
+        async with self._session() as s:
+            async with s.request("PROPFIND", self.base, headers={"Depth": "1"}) as r:
+                if r.status >= 400:
+                    log.warning("PROPFIND %s returned HTTP %s", self.base, r.status)
+                    return []
+                text = await r.text()
+        names: set[str] = set()
+        for href in re.findall(r"<[^>]*?href[^>]*?>([^<]+)</[^>]*?href>", text, re.I):
+            base_name = unquote(href.rstrip("/").rsplit("/", 1)[-1])
+            if base_name.endswith(".json"):
+                names.add(base_name)
+        return sorted(names)
 
     async def check(self) -> bool:
         """Quick connectivity/credentials test. Returns True if reachable."""
