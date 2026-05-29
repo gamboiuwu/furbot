@@ -40,6 +40,7 @@ INITIAL_COGS = (
     "cogs.onboarding",
     "cogs.birthday",
     "cogs.leaderboard",
+    "cogs.review",
 )
 
 
@@ -97,7 +98,8 @@ class FurBot(commands.Bot):
         # restart. DynamicItems are registered by class; the batch view by
         # instance (its custom_ids are fixed).
         from cogs.onboarding import BatchConfirmView, ModActionButton, PhoneReviewButton, WaitingButton
-        self.add_dynamic_items(WaitingButton, PhoneReviewButton, ModActionButton)
+        from cogs.review import ReviewButton
+        self.add_dynamic_items(WaitingButton, PhoneReviewButton, ModActionButton, ReviewButton)
         self.add_view(BatchConfirmView(self))
 
         # Register slash commands. If a guild ID is configured we sync to

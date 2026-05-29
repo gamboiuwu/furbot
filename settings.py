@@ -43,6 +43,11 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "verify_pending_enabled":    (bool,  True,  "Ping staff when someone who answered in the verify channel waits too long."),
     "verify_escalate_hours":     (int,   48,    "Hours after a verify-channel message before pinging staff to push them."),
     "verify_followup_hours":     (int,   24,    "Hours after staff is pinged (no action) before the 'are you still there?' nudge."),
+    "review_enabled":            (bool,  False, "Master switch for the one-month member check-in survey."),
+    "feedback_channel_id":       (int,   1510064548084715520, "Channel (in the staff server) where check-in feedback is posted."),
+    "review_after_days":         (int,   30,    "Days after joining before a member gets the check-in DM."),
+    "review_batch":              (int,   25,    "Max check-in DMs sent per cycle."),
+    "review_interval_minutes":   (int,   30,    "Minutes between check-in cycles."),
     "birthday_promo_message":    (str,
         "Hey there! 🐾\n"
         "If you want, you can let us know about your birthday so the bot can give you the "

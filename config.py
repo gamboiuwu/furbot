@@ -111,6 +111,11 @@ class Config:
     verify_pending_enabled: bool | None
     verify_escalate_hours: int | None
     verify_followup_hours: int | None
+    review_enabled: bool | None
+    feedback_channel_id: int | None
+    review_after_days: int | None
+    review_batch: int | None
+    review_interval_minutes: int | None
 
     @property
     def webdav_enabled(self) -> bool:
@@ -176,4 +181,9 @@ class Config:
             verify_pending_enabled=_get_bool("VERIFY_PENDING_ENABLED"),
             verify_escalate_hours=_get_int("VERIFY_ESCALATE_HOURS"),
             verify_followup_hours=_get_int("VERIFY_FOLLOWUP_HOURS"),
+            review_enabled=_get_bool("REVIEW_ENABLED"),
+            feedback_channel_id=_get_int("FEEDBACK_CHANNEL_ID"),
+            review_after_days=_get_int("REVIEW_AFTER_DAYS"),
+            review_batch=_get_int("REVIEW_BATCH"),
+            review_interval_minutes=_get_int("REVIEW_INTERVAL_MINUTES"),
         )
