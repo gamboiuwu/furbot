@@ -54,9 +54,21 @@ class Config:
     def load(cls) -> "Config":
         token = os.getenv("DISCORD_TOKEN", "").strip()
         if not token:
+            # Help diagnose hosting setups: list which of OUR expected
+            # variables the environment actually passed in (names only —
+            # never the secret values themselves).
+            expected = [
+                "DISCORD_TOKEN", "GUILD_ID", "VERIFICATION_CHANNEL_ID",
+                "FLOOFS_ROLE_ID", "STAFF_ROLE_ID", "APPROVAL_EMOJI", "LOG_CHANNEL_ID",
+            ]
+            present = [name for name in expected if os.getenv(name, "").strip()]
+            detected = ", ".join(present) if present else "(none)"
             raise RuntimeError(
-                "DISCORD_TOKEN is not set. Copy .env.example to .env and fill it in, "
-                "or set it in your host's environment variables."
+                "DISCORD_TOKEN is not set. The bot can't log in without it.\n"
+                f"  Variables this container actually received: {detected}\n"
+                "  Fix: in your host (e.g. Railway > your service > Variables), make sure a\n"
+                "  variable named exactly DISCORD_TOKEN exists, then click Deploy/Apply so the\n"
+                "  change takes effect. Make sure you're editing the bot service, not a different one."
             )
         return cls(
             token=token,
