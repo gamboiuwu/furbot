@@ -498,7 +498,10 @@ class Onboarding(commands.Cog, MemberActions):
             )
         await interaction.followup.send(ack, ephemeral=True)
 
-    def _escalation_embed(self, guild: discord.Guild, member: discord.Member, reason: str = "waiting") -> discord.Embed:
+    def _escalation_embed(
+        self, guild: discord.Guild, member: discord.Member, reason: str = "waiting",
+        messages: list[discord.Message] | None = None,
+    ) -> discord.Embed:
         embed = build_userinfo_embed(
             member, floofs_role_id=self.config.floofs_role_id, title="🔔 Verification request"
         )
@@ -519,7 +522,33 @@ class Onboarding(commands.Cog, MemberActions):
                 f"**{member}** has been waiting **over {self._s('onboarding_reminder_hours')} hours** to be "
                 f"verified in **{guild.name}** and asked for help. Their message should be in {chan}."
             )
+        for i, msg in enumerate(messages or [], 1):
+            content = (msg.content or "").strip()
+            if msg.attachments:
+                content += ("\n" if content else "") + "📎 " + ", ".join(a.filename for a in msg.attachments)
+            ts = f"<t:{int(msg.created_at.timestamp())}:R>"
+            embed.add_field(name=f"📝 Their message {i} · {ts}", value=(content or "(no text)")[:1024], inline=False)
         return embed
+
+    async def _recent_user_messages(
+        self, guild: discord.Guild, member: discord.Member, limit: int = 5, scan: int = 300
+    ) -> list[discord.Message]:
+        """The member's most recent messages in the verification channel (oldest-first)."""
+        cid = self.config.verification_channel_id
+        channel = self.bot.get_channel(cid) if cid else None
+        if not isinstance(channel, discord.TextChannel):
+            return []
+        found: list[discord.Message] = []
+        try:
+            async for msg in channel.history(limit=scan):
+                if msg.author.id == member.id and (msg.content or msg.attachments):
+                    found.append(msg)
+                    if len(found) >= limit:
+                        break
+        except discord.HTTPException:
+            return []
+        found.reverse()
+        return found
 
     async def _dm_random_mod(
         self, guild: discord.Guild, member: discord.Member, reason: str = "waiting"
@@ -531,7 +560,8 @@ class Onboarding(commands.Cog, MemberActions):
             return None
         candidates = [m for m in role.members if not m.bot]
         random.shuffle(candidates)
-        embed = self._escalation_embed(guild, member, reason)
+        messages = await self._recent_user_messages(guild, member)
+        embed = self._escalation_embed(guild, member, reason, messages)
         for mod in candidates[:5]:  # try a few in case some have DMs closed
             view = build_mod_view(guild.id, member.id)
             try:
@@ -552,9 +582,10 @@ class Onboarding(commands.Cog, MemberActions):
             f"<@&{self.config.staff_role_id}> verification help requested"
             if self.config.staff_role_id else "Verification help requested"
         )
+        messages = await self._recent_user_messages(guild, member)
         await channel.send(
             content=content,
-            embed=self._escalation_embed(guild, member, reason),
+            embed=self._escalation_embed(guild, member, reason, messages),
             view=build_mod_view(guild.id, member.id),
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
@@ -783,7 +814,8 @@ class Onboarding(commands.Cog, MemberActions):
     async def _followup_mod(self, guild: discord.Guild, member: discord.Member, mod_id: int) -> None:
         """Nudge the moderator who was pinged but hasn't acted."""
         content = f"are you still there? >:c — **{member}** is **still** waiting to be verified."
-        embed = self._escalation_embed(guild, member, "pending")
+        messages = await self._recent_user_messages(guild, member)
+        embed = self._escalation_embed(guild, member, "pending", messages)
         mod = guild.get_member(mod_id) if mod_id else None
         if mod is not None:
             try:
