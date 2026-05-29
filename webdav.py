@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import aiohttp
 from yarl import URL
@@ -25,11 +25,29 @@ _TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 class WebDAVClient:
     def __init__(self, base_url: str, username: str, password: str) -> None:
-        # Normalize encoding: unquote anything already-encoded (e.g. "%20"),
-        # then let yarl encode exactly once. This works whether the user
-        # pasted "NYFurs Private", "NYFurs%20Private", etc.
-        self.base = URL(unquote(base_url.rstrip("/")), encoded=False)
+        # Fix the common mistake of pasting the Nextcloud *web* URL, then
+        # normalize encoding (unquote, then let yarl encode exactly once —
+        # works whether the user pasted "NYFurs Private" or "NYFurs%20Private").
+        normalized = self._to_webdav_url(base_url, username)
+        self.base = URL(unquote(normalized.rstrip("/")), encoded=False)
         self._auth = aiohttp.BasicAuth(username, password)
+        if normalized.rstrip("/") != base_url.strip().rstrip("/"):
+            log.warning(
+                "WEBDAV_URL looked like a browser URL; using the WebDAV endpoint %s instead.",
+                self.base,
+            )
+
+    @staticmethod
+    def _to_webdav_url(base_url: str, username: str) -> str:
+        """Turn a Nextcloud Files *web* URL (…/apps/files/…?dir=/A/B) into the
+        proper WebDAV endpoint (…/remote.php/dav/files/<user>/A/B). Leaves an
+        already-correct WebDAV URL untouched."""
+        parts = urlsplit(base_url.strip())
+        if "/apps/files" in parts.path or "dir=" in (parts.query or ""):
+            folder = parse_qs(parts.query).get("dir", [""])[0].strip("/")
+            root = f"{parts.scheme}://{parts.netloc}/remote.php/dav/files/{username}"
+            return f"{root}/{folder}" if folder else root
+        return f"{parts.scheme}://{parts.netloc}{parts.path}"
 
     def _session(self) -> aiohttp.ClientSession:
         return aiohttp.ClientSession(auth=self._auth, timeout=_TIMEOUT)
