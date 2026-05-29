@@ -34,6 +34,7 @@ class Verification(commands.Cog, MemberActions):
         self.bot = bot
         self.config = bot.config
         self.store = bot.store
+        self.settings = bot.settings
 
     async def cog_load(self) -> None:
         self.process_unbans.start()

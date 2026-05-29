@@ -192,9 +192,11 @@ class Onboarding(commands.Cog, MemberActions):
 
     async def cog_load(self) -> None:
         self.sweep.start()
+        self.auto_loop.start()
 
     async def cog_unload(self) -> None:
         self.sweep.cancel()
+        self.auto_loop.cancel()
 
     # ---- small helpers ---------------------------------------------------
 
@@ -228,23 +230,30 @@ class Onboarding(commands.Cog, MemberActions):
     # ---- compute eligible members ---------------------------------------
 
     def _compute(self, guild: discord.Guild) -> tuple[list[discord.Member], list[discord.Member]]:
+        """Returns (due_remind, due_kick).
+        - due_remind: unverified, not yet notified, and past the reminder age.
+        - due_kick:   unverified, already notified, and the grace period has passed.
+        """
         role = self._floofs_role(guild)
         if role is None:
             return [], []
         reminder_h = self._s("onboarding_reminder_hours")
-        kick_h = self._s("onboarding_kick_hours")
+        grace_s = self._s("onboarding_grace_hours") * 3600
         reminded = self.store.get(REMINDED, {})
         now = discord.utils.utcnow()
+        now_ts = time.time()
         due_remind: list[discord.Member] = []
         due_kick: list[discord.Member] = []
         for m in guild.members:
             if m.bot or role in m.roles or m.joined_at is None:
                 continue
-            hours = (now - m.joined_at).total_seconds() / 3600
-            if hours >= kick_h:
-                due_kick.append(m)
-            elif hours >= reminder_h and f"{guild.id}:{m.id}" not in reminded:
-                due_remind.append(m)
+            notified_at = reminded.get(f"{guild.id}:{m.id}")
+            if notified_at is not None:
+                if now_ts - notified_at >= grace_s:
+                    due_kick.append(m)
+            else:
+                if (now - m.joined_at).total_seconds() / 3600 >= reminder_h:
+                    due_remind.append(m)
         return due_remind, due_kick
 
     async def _prune(self, guild: discord.Guild) -> None:
@@ -272,9 +281,12 @@ class Onboarding(commands.Cog, MemberActions):
 
     def _summary_embed(self, guild, due_remind, due_kick, note) -> discord.Embed:
         e = discord.Embed(title="🧹 Verification sweep", color=discord.Color.orange())
+        mode = "🤖 AUTO" if self._s("onboarding_auto") else "🙋 manual (staff-confirm)"
         e.description = (
-            f"**{len(due_remind)}** member(s) are due a {self._s('onboarding_reminder_hours')}h reminder.\n"
-            f"**{len(due_kick)}** member(s) are past {self._s('onboarding_kick_hours')}h and can be removed."
+            f"Mode: **{mode}**\n"
+            f"**{len(due_remind)}** member(s) due a reminder.\n"
+            f"**{len(due_kick)}** member(s) notified over {self._s('onboarding_grace_hours')}h ago "
+            "and can be removed."
         )
 
         def preview(members: list[discord.Member]) -> str:
@@ -385,13 +397,20 @@ class Onboarding(commands.Cog, MemberActions):
             "and a moderator will approve you.\n"
             "📱 Some servers also need a **verified phone number** on your Discord account. To add one: "
             "**User Settings → My Account → Phone Number**, then enter the code Discord texts you.\n"
-            f"⏰ **Heads up:** if you're not verified within the next "
-            f"**{self._s('onboarding_kick_hours') - self._s('onboarding_reminder_hours')} hours**, "
+            f"⏰ **Heads up:** if you're not verified within about **{self._s('onboarding_grace_hours')} hours**, "
             "you'll be removed — but you're always welcome to rejoin and try again.\n"
             "Been waiting a while, or can't set up a phone? Tap a button below and I'll get a moderator."
         )
-        if not await self._try_dm(member, text, view=view):
+        notified = await self._try_dm(member, text, view=view)
+        if not notified:
+            # Closed DMs -> ping them in the verification channel instead.
+            notified = await self._ping_unreachable(guild, member)
+        if not notified:
             return False
+        await self._mark_reminded(guild, member)
+        return True
+
+    async def _mark_reminded(self, guild: discord.Guild, member: discord.Member) -> None:
         key = f"{guild.id}:{member.id}"
 
         def mut(d: dict) -> None:
@@ -400,7 +419,24 @@ class Onboarding(commands.Cog, MemberActions):
             stats["reminded"] = stats.get("reminded", 0) + 1
 
         await self.store.update(mut)
-        return True
+
+    async def _ping_unreachable(self, guild: discord.Guild, member: discord.Member) -> bool:
+        cid = self.config.verification_channel_id
+        channel = self.bot.get_channel(cid) if cid else None
+        if not isinstance(channel, discord.TextChannel):
+            return False
+        grace = self._s("onboarding_grace_hours")
+        text = (
+            f"{member.mention} — I couldn't DM you about verification (your DMs may be closed). "
+            f"Please get verified here soon: you have about **{grace} hours** before you'll be removed "
+            "from the server. Open your DMs to me, or follow the channel instructions."
+        )
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions(users=True))
+            return True
+        except discord.HTTPException:
+            log.exception("Failed to ping unreachable member in verification channel")
+            return False
 
     # ---- member "I'm waiting" button ------------------------------------
 
@@ -589,6 +625,55 @@ class Onboarding(commands.Cog, MemberActions):
                 await guild.chunk()
             except (discord.HTTPException, discord.ClientException):
                 log.exception("Failed to chunk guild members for sweep")
+
+    # ---- automated mode (no staff clicks) -------------------------------
+
+    @tasks.loop(minutes=1)
+    async def auto_loop(self) -> None:
+        """When AUTO mode is on: send reminders (throttled to N/minute) and
+        kick anyone whose grace period has expired. Nothing here runs unless
+        BOTH onboarding_enabled and onboarding_auto are true."""
+        if not (self._s("onboarding_enabled") and self._s("onboarding_auto")):
+            return
+        guild = self._guild()
+        if guild is None:
+            return
+        if not guild.chunked:
+            try:
+                await guild.chunk()
+            except (discord.HTTPException, discord.ClientException):
+                return
+        await self._prune(guild)
+        due_remind, due_kick = self._compute(guild)
+        rate = max(1, self._s("onboarding_remind_per_minute"))
+        delay = 60.0 / rate
+
+        sent = 0
+        for m in due_remind[:rate]:
+            if await self._send_reminder(guild, m):
+                sent += 1
+            await asyncio.sleep(delay)
+
+        kicked = 0
+        for m in due_kick[:rate]:
+            ok = await self._kick(
+                m, by=guild.me, reason="Unverified — grace period expired",
+                dm_text=self._removal_dm(guild),
+            )
+            if not ok:  # likely missing Kick Members — stop and surface it
+                break
+            kicked += 1
+            await asyncio.sleep(delay)
+
+        if sent or kicked:
+            await self._log_action(
+                f"🤖 Auto-onboarding: notified {sent}, removed {kicked} this minute "
+                f"({len(due_remind)} awaiting reminder, {len(due_kick)} past grace)."
+            )
+
+    @auto_loop.before_loop
+    async def _before_auto(self) -> None:
+        await self.bot.wait_until_ready()
 
     # ---- manual trigger --------------------------------------------------
 

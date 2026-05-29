@@ -143,8 +143,28 @@ class MemberActions:
             f"Welcome to **{member.guild.name}**! You've been verified and given "
             f"the **{role.name}** role. 🐾",
         )
+        await self._post_welcome(member)
         await self._record("verified", member, by)
         return True
+
+    async def _post_welcome(self, member: discord.Member) -> None:
+        """Post a public welcome message when a member is verified (if a welcome
+        channel/message is configured via settings)."""
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return
+        channel_id = settings.get("welcome_channel_id")
+        if not channel_id:
+            return
+        channel = self.bot.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        template = settings.get("welcome_message") or "🎉 Welcome {member} to {server}!"
+        text = template.replace("{member}", member.mention).replace("{server}", member.guild.name)
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.HTTPException:
+            log.exception("Failed to post welcome message")
 
     # ---- warn ------------------------------------------------------------
 

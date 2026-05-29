@@ -87,12 +87,17 @@ class Config:
     # live values are managed at runtime via /config (see settings.py). Leave
     # them unset and configure from Discord instead.
     onboarding_enabled: bool | None
+    onboarding_auto: bool | None
     onboarding_reminder_hours: int | None
+    onboarding_grace_hours: int | None
+    onboarding_remind_per_minute: int | None
     onboarding_kick_hours: int | None
     onboarding_sweep_minutes: int | None
     onboarding_batch_cap: int | None
     onboarding_action_delay: float | None
     invite_link: str | None
+    welcome_channel_id: int | None
+    welcome_message: str | None
 
     @property
     def webdav_enabled(self) -> bool:
@@ -134,10 +139,15 @@ class Config:
             webdav_username=os.getenv("WEBDAV_USERNAME", "").strip() or None,
             webdav_password=os.getenv("WEBDAV_PASSWORD", "").strip() or None,
             onboarding_enabled=_get_bool("ONBOARDING_ENABLED"),
+            onboarding_auto=_get_bool("ONBOARDING_AUTO"),
             onboarding_reminder_hours=_get_int("ONBOARDING_REMINDER_HOURS"),
+            onboarding_grace_hours=_get_int("ONBOARDING_GRACE_HOURS"),
+            onboarding_remind_per_minute=_get_int("ONBOARDING_REMIND_PER_MINUTE"),
             onboarding_kick_hours=_get_int("ONBOARDING_KICK_HOURS"),
             onboarding_sweep_minutes=_get_int("ONBOARDING_SWEEP_MINUTES"),
             onboarding_batch_cap=_get_int("ONBOARDING_BATCH_CAP"),
             onboarding_action_delay=_get_float("ONBOARDING_ACTION_DELAY"),
             invite_link=os.getenv("INVITE_LINK", "").strip() or None,
+            welcome_channel_id=_get_int("WELCOME_CHANNEL_ID"),
+            welcome_message=os.getenv("WELCOME_MESSAGE", "").strip() or None,
         )

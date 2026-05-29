@@ -74,10 +74,11 @@ class General(commands.Cog):
         embed.add_field(
             name="🧹 Onboarding (unverified members)",
             value=(
-                "When enabled, members unverified for ~12h get a reminder DM with an "
-                "**'I'm waiting'** button that pings a moderator; those past ~24h can be "
-                "kicked. Nothing happens automatically — staff confirm batches from the "
-                "log channel. Turn on with `/config set onboarding_enabled true`."
+                "Unverified members get a reminder DM (with **'I'm waiting'** + **phone help** "
+                "buttons that ping a moderator), then are removed after a grace period.\n"
+                "• **Manual:** `/config set onboarding_enabled true` — staff confirm batches in the log channel.\n"
+                "• **Auto:** also `/config set onboarding_auto true` — sends reminders (throttled) and "
+                "kicks automatically. A welcome is posted when someone is verified."
             ),
             inline=False,
         )

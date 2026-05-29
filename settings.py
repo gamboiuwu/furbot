@@ -18,12 +18,18 @@ SETTINGS_KEY = "settings"
 # name -> (type, default, help text)
 SETTINGS: dict[str, tuple[type, object, str]] = {
     "onboarding_enabled":        (bool,  False, "Master switch for the unverified-onboarding sweep."),
-    "onboarding_reminder_hours": (int,   12,    "Hours a member can stay unverified before a reminder DM."),
-    "onboarding_kick_hours":     (int,   24,    "Hours unverified before a member becomes kick-eligible."),
-    "onboarding_sweep_minutes":  (int,   30,    "How often the background sweep runs (minutes)."),
+    "onboarding_auto":           (bool,  False, "AUTO mode: send reminders & kick automatically (no staff clicks)."),
+    "onboarding_reminder_hours": (int,   12,    "Hours a member can stay unverified before a reminder."),
+    "onboarding_grace_hours":    (int,   12,    "Hours after a member is notified before auto-kick."),
+    "onboarding_remind_per_minute": (int, 25,   "AUTO mode: max reminder DMs sent per minute (rate limit)."),
+    "onboarding_kick_hours":     (int,   24,    "Manual mode: hours unverified before kick-eligible (legacy)."),
+    "onboarding_sweep_minutes":  (int,   30,    "How often the staff-summary sweep runs (minutes)."),
     "onboarding_batch_cap":      (int,   25,    "Max members actioned per confirmed batch click."),
-    "onboarding_action_delay":   (float, 1.5,   "Seconds to wait between batch actions (rate-limit safety)."),
+    "onboarding_action_delay":   (float, 1.5,   "Seconds between actions in a staff-confirmed batch."),
     "invite_link":               (str,   "",    "Invite link included in the removal DM (optional)."),
+    "welcome_channel_id":        (int,   863527523757588486, "Channel where a welcome is posted when someone is verified."),
+    "welcome_message":           (str,   "🎉 Everyone please welcome {member} to **{server}**! So glad you're here. 🐾",
+                                  "Welcome message. {member} = mention, {server} = server name."),
 }
 
 
