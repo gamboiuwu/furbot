@@ -48,6 +48,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "review_after_days":         (int,   30,    "Days after joining before a member gets the check-in DM."),
     "review_batch":              (int,   25,    "Max check-in DMs sent per cycle."),
     "review_interval_minutes":   (int,   30,    "Minutes between check-in cycles."),
+    "review_recheck_days":       (int,   90,    "Days until an opted-in member is asked again (~3 months)."),
     "birthday_promo_message":    (str,
         "Hey there! 🐾\n"
         "If you want, you can let us know about your birthday so the bot can give you the "

@@ -14,6 +14,7 @@ import asyncio
 import datetime
 import hashlib
 import logging
+import time
 
 import discord
 from discord import app_commands
@@ -21,8 +22,9 @@ from discord.ext import commands, tasks
 
 log = logging.getLogger("furbot.review")
 
-REVIEW_SENT = "review_sent"    # {user_id_str: epoch_sent}
-REVIEW_STATE = "review_state"  # {"seeded": bool}
+REVIEW_SENT = "review_sent"        # {user_id_str: epoch_sent}
+REVIEW_STATE = "review_state"      # {"seeded": bool}
+REVIEW_RECHECK = "review_recheck"  # {user_id_str: due_epoch} (opted-in follow-ups)
 
 QUESTIONS = [
     "How has your experience been so far?",
@@ -89,6 +91,47 @@ class ReviewButton(
         await interaction.response.send_modal(
             ReviewModal(cog, self.guild_id, self.user_id, anonymous=self.mode == "anon")
         )
+
+
+class ReviewConsentButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"review:consent:v1:(?P<choice>yes|no):(?P<guild_id>\d+):(?P<user_id>\d+)",
+):
+    _SPEC = {"yes": ("Yes, that's fine", discord.ButtonStyle.success),
+             "no": ("No thanks", discord.ButtonStyle.secondary)}
+
+    def __init__(self, choice: str, guild_id: int, user_id: int) -> None:
+        self.choice = choice
+        self.guild_id = guild_id
+        self.user_id = user_id
+        label, style = self._SPEC[choice]
+        super().__init__(
+            discord.ui.Button(
+                label=label, style=style,
+                custom_id=f"review:consent:v1:{choice}:{guild_id}:{user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match["choice"], int(match["guild_id"]), int(match["user_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
+        cog: "Review | None" = interaction.client.get_cog("Review")
+        if cog is None:
+            await interaction.response.send_message("This isn't available right now.", ephemeral=True)
+            return
+        await cog.handle_consent(interaction, self.choice, self.user_id)
+
+
+def build_consent_view(guild_id: int, user_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(ReviewConsentButton("yes", guild_id, user_id))
+    view.add_item(ReviewConsentButton("no", guild_id, user_id))
+    return view
 
 
 class Review(commands.Cog):
@@ -161,7 +204,28 @@ class Review(commands.Cog):
         else:
             log.warning("Feedback channel %s not found — is the bot in the staff server?", self._s("feedback_channel_id"))
 
-        await interaction.response.send_message("Thank you. Your feedback has been received.", ephemeral=True)
+        months = max(1, round(self._s("review_recheck_days") / 30))
+        await interaction.response.send_message(
+            "Thank you. Your feedback has been received.\n\n"
+            f"One last thing: would you be open to a short check-in like this again in about {months} months?",
+            view=build_consent_view(guild_id, user_id),
+            ephemeral=True,
+        )
+
+    async def handle_consent(self, interaction: discord.Interaction, choice: str, user_id: int) -> None:
+        days = self._s("review_recheck_days")
+        if choice == "yes":
+            due = int(time.time()) + days * 86400
+            await self.store.update(lambda d: d.setdefault(REVIEW_RECHECK, {}).__setitem__(str(user_id), due))
+            months = max(1, round(days / 30))
+            msg = (
+                f"Thank you. We'll check in again in about {months} months. "
+                "If you change your mind, you can simply ignore that message."
+            )
+        else:
+            await self.store.update(lambda d: d.get(REVIEW_RECHECK, {}).pop(str(user_id), None))
+            msg = "Understood. We won't reach out again. Thanks for your time."
+        await interaction.response.edit_message(content=msg, view=None)
 
     # ---- DM sending ------------------------------------------------------
 
@@ -173,8 +237,8 @@ class Review(commands.Cog):
             "it's been going for you. Your feedback helps us make the community better for everyone. ^_^\n"
             "It's completely optional, but if you have a minute, use a button below to open a short form. "
             "You're welcome to keep it anonymous if you'd prefer.\n"
-            "Just so you know: this is the only message of its kind you'll get from this bot, and we "
-            "won't message you again.\n"
+            "Just so you know: we'll only reach out again if you choose to opt in to a future check-in at "
+            "the end of the form. Otherwise, this is the only message you'll receive from this bot.\n"
             "Thanks for being part of NYFurs.\n"
             "— The NYFurs Staff Team"
         )
@@ -225,14 +289,26 @@ class Review(commands.Cog):
         batch = max(1, self._s("review_batch"))
         delay = 60.0 / batch  # spread across the cycle
         now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+
+        # Opted-in follow-ups that have come due — send the same form again.
+        recheck = self.store.get(REVIEW_RECHECK, {})
+        due = [uid for uid, t in recheck.items() if t <= time.time()][:batch]
+        for uid in due:
+            member = guild.get_member(int(uid))
+            if member is not None:
+                await self._send_review(guild, member)
+            await self.store.update(lambda d, k=uid: d.get(REVIEW_RECHECK, {}).pop(k, None))
+            await asyncio.sleep(delay)
+
+        # First-time check-ins for members who just crossed the threshold.
         sent_count = 0
         for member in eligible[:batch]:
             await self._send_review(guild, member)
             await self.store.update(lambda d, mid=str(member.id): d.setdefault(REVIEW_SENT, {}).__setitem__(mid, now))
             sent_count += 1
             await asyncio.sleep(delay)
-        if sent_count:
-            log.info("Review: sent %d check-in DM(s) this cycle (%d remaining).", sent_count, max(0, len(eligible) - sent_count))
+        if sent_count or due:
+            log.info("Review: %d first-time, %d follow-up DM(s) this cycle.", sent_count, len(due))
 
     @review_loop.before_loop
     async def _before(self) -> None:

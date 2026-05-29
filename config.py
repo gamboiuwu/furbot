@@ -116,6 +116,7 @@ class Config:
     review_after_days: int | None
     review_batch: int | None
     review_interval_minutes: int | None
+    review_recheck_days: int | None
 
     @property
     def webdav_enabled(self) -> bool:
@@ -186,4 +187,5 @@ class Config:
             review_after_days=_get_int("REVIEW_AFTER_DAYS"),
             review_batch=_get_int("REVIEW_BATCH"),
             review_interval_minutes=_get_int("REVIEW_INTERVAL_MINUTES"),
+            review_recheck_days=_get_int("REVIEW_RECHECK_DAYS"),
         )
