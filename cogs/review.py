@@ -20,6 +20,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from checks import NotStaff, is_staff
+
 log = logging.getLogger("furbot.review")
 
 REVIEW_SENT = "review_sent"        # {user_id_str: epoch_sent}
@@ -313,6 +315,43 @@ class Review(commands.Cog):
     @review_loop.before_loop
     async def _before(self) -> None:
         await self.bot.wait_until_ready()
+
+    # ---- manual test -----------------------------------------------------
+
+    @app_commands.command(
+        name="review_test",
+        description="(Staff) Send yourself or a member the one-month check-in now, for testing.",
+    )
+    @app_commands.describe(member="Who to send the test check-in to (defaults to you)")
+    @is_staff()
+    async def review_test(self, interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+        guild = interaction.guild or self._guild()
+        target = member or interaction.user
+        if guild is None or not isinstance(target, discord.Member):
+            await interaction.response.send_message("Use this in the server.", ephemeral=True)
+            return
+        await self._send_review(guild, target)  # does not mark them as sent — repeatable
+        note = "" if self.bot.get_channel(self._s("feedback_channel_id")) else (
+            "\nNote: I can't see the feedback channel yet — invite me to the staff server and check "
+            "`feedback_channel_id`, or submissions won't post."
+        )
+        await interaction.response.send_message(
+            f"Sent the check-in DM to {target.mention}. If it didn't arrive, their DMs are closed.{note}",
+            ephemeral=True,
+        )
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
+        else:
+            log.exception("Review command error", exc_info=error)
+            msg = "Something went wrong running that command."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
