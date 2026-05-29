@@ -58,7 +58,7 @@ class Verification(commands.Cog):
         await member.add_roles(role, reason=f"Verified by {by} ({reason})")
         log.info("Granted Floofs to %s (by %s)", member, by)
         await self._log_action(
-            f"🐾 **{member.mention}** was given **{role.name}** by {by.mention} ({reason})."
+            f"🐾 **{member.mention}** was given **{role.name}** by **{by.display_name}** ({reason})."
         )
         # Friendly DM — ignore failures (user may have DMs closed).
         try:
