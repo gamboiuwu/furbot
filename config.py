@@ -90,7 +90,8 @@ class Config:
     onboarding_auto: bool | None
     onboarding_reminder_hours: int | None
     onboarding_grace_hours: int | None
-    onboarding_remind_per_minute: int | None
+    onboarding_remind_batch: int | None
+    onboarding_remind_interval_minutes: int | None
     onboarding_kick_hours: int | None
     onboarding_sweep_minutes: int | None
     onboarding_batch_cap: int | None
@@ -142,7 +143,8 @@ class Config:
             onboarding_auto=_get_bool("ONBOARDING_AUTO"),
             onboarding_reminder_hours=_get_int("ONBOARDING_REMINDER_HOURS"),
             onboarding_grace_hours=_get_int("ONBOARDING_GRACE_HOURS"),
-            onboarding_remind_per_minute=_get_int("ONBOARDING_REMIND_PER_MINUTE"),
+            onboarding_remind_batch=_get_int("ONBOARDING_REMIND_BATCH"),
+            onboarding_remind_interval_minutes=_get_int("ONBOARDING_REMIND_INTERVAL_MINUTES"),
             onboarding_kick_hours=_get_int("ONBOARDING_KICK_HOURS"),
             onboarding_sweep_minutes=_get_int("ONBOARDING_SWEEP_MINUTES"),
             onboarding_batch_cap=_get_int("ONBOARDING_BATCH_CAP"),

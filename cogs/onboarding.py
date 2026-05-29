@@ -628,11 +628,16 @@ class Onboarding(commands.Cog, MemberActions):
 
     # ---- automated mode (no staff clicks) -------------------------------
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(minutes=10)
     async def auto_loop(self) -> None:
-        """When AUTO mode is on: send reminders (throttled to N/minute) and
-        kick anyone whose grace period has expired. Nothing here runs unless
-        BOTH onboarding_enabled and onboarding_auto are true."""
+        """When AUTO mode is on: each cycle, send a batch of reminders and kick
+        anyone whose grace period has expired. Nothing here runs unless BOTH
+        onboarding_enabled and onboarding_auto are true."""
+        # Keep the cycle interval in sync with the setting.
+        interval = max(1, self._s("onboarding_remind_interval_minutes"))
+        if self.auto_loop.minutes != interval:
+            self.auto_loop.change_interval(minutes=interval)
+
         if not (self._s("onboarding_enabled") and self._s("onboarding_auto")):
             return
         guild = self._guild()
@@ -645,17 +650,17 @@ class Onboarding(commands.Cog, MemberActions):
                 return
         await self._prune(guild)
         due_remind, due_kick = self._compute(guild)
-        rate = max(1, self._s("onboarding_remind_per_minute"))
-        delay = 60.0 / rate
+        batch = max(1, self._s("onboarding_remind_batch"))
+        delay = self._s("onboarding_action_delay") or 1.5
 
         sent = 0
-        for m in due_remind[:rate]:
+        for m in due_remind[:batch]:
             if await self._send_reminder(guild, m):
                 sent += 1
             await asyncio.sleep(delay)
 
         kicked = 0
-        for m in due_kick[:rate]:
+        for m in due_kick[:batch]:
             ok = await self._kick(
                 m, by=guild.me, reason="Unverified — grace period expired",
                 dm_text=self._removal_dm(guild),
@@ -667,7 +672,7 @@ class Onboarding(commands.Cog, MemberActions):
 
         if sent or kicked:
             await self._log_action(
-                f"🤖 Auto-onboarding: notified {sent}, removed {kicked} this minute "
+                f"🤖 Auto-onboarding: notified {sent}, removed {kicked} this cycle "
                 f"({len(due_remind)} awaiting reminder, {len(due_kick)} past grace)."
             )
 
