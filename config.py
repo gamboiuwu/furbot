@@ -32,6 +32,25 @@ def _get_int(name: str) -> int | None:
         raise ValueError(f"Environment variable {name} must be a number, got: {raw!r}")
 
 
+def _get_float(name: str) -> float | None:
+    """Read an environment variable as a float, or None if unset/blank."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"Environment variable {name} must be a number, got: {raw!r}")
+
+
+def _get_bool(name: str) -> bool | None:
+    """Read an environment variable as a bool, or None if unset/blank."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return None
+    return raw in ("1", "true", "yes", "on", "y")
+
+
 @dataclass(frozen=True)
 class Config:
     # Required: the bot's login token from the Discord Developer Portal.
@@ -63,6 +82,17 @@ class Config:
     webdav_url: str | None
     webdav_username: str | None
     webdav_password: str | None
+
+    # Optional onboarding defaults. These are bootstrap defaults only — the
+    # live values are managed at runtime via /config (see settings.py). Leave
+    # them unset and configure from Discord instead.
+    onboarding_enabled: bool | None
+    onboarding_reminder_hours: int | None
+    onboarding_kick_hours: int | None
+    onboarding_sweep_minutes: int | None
+    onboarding_batch_cap: int | None
+    onboarding_action_delay: float | None
+    invite_link: str | None
 
     @property
     def webdav_enabled(self) -> bool:
@@ -103,4 +133,11 @@ class Config:
             webdav_url=os.getenv("WEBDAV_URL", "").strip() or None,
             webdav_username=os.getenv("WEBDAV_USERNAME", "").strip() or None,
             webdav_password=os.getenv("WEBDAV_PASSWORD", "").strip() or None,
+            onboarding_enabled=_get_bool("ONBOARDING_ENABLED"),
+            onboarding_reminder_hours=_get_int("ONBOARDING_REMINDER_HOURS"),
+            onboarding_kick_hours=_get_int("ONBOARDING_KICK_HOURS"),
+            onboarding_sweep_minutes=_get_int("ONBOARDING_SWEEP_MINUTES"),
+            onboarding_batch_cap=_get_int("ONBOARDING_BATCH_CAP"),
+            onboarding_action_delay=_get_float("ONBOARDING_ACTION_DELAY"),
+            invite_link=os.getenv("INVITE_LINK", "").strip() or None,
         )

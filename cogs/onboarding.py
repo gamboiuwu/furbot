@@ -1,0 +1,581 @@
+"""Unverified-member onboarding: reminder → self-escalation → kick.
+
+Nothing here acts on its own. A background sweep only posts a summary to the
+log channel; staff click buttons to actually send reminders or kick. Members
+who get a reminder can tap a button to escalate to a random moderator, who
+gets Approve / Needs-more-info / Deny buttons right in their DMs.
+
+All buttons are persistent across restarts:
+  * the member and moderator DM buttons are `DynamicItem`s that encode the
+    guild + user in their custom_id (DM interactions carry no guild context);
+  * the log-channel batch buttons are a static persistent View that re-scans
+    live state when clicked.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+
+from checks import NotStaff, is_staff
+from verification_actions import STATS, MemberActions, build_userinfo_embed
+
+log = logging.getLogger("furbot.onboarding")
+
+# Store keys.
+REMINDED = "onboarding.reminded"      # {"guild:user": epoch_first_reminded}
+ESCALATED = "onboarding.escalated"    # {"guild:user": {"at": epoch, "mod_id": int}}
+SUMMARY_MSG = "onboarding.summary_msg"  # {"channel_id": int, "message_id": int}
+
+STAFF_ONLY = "🔒 This action is for staff only."
+
+
+# --------------------------------------------------------------------------
+# Persistent DM buttons (DynamicItem)
+# --------------------------------------------------------------------------
+
+class WaitingButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ob:wait:v1:(?P<guild_id>\d+):(?P<user_id>\d+)",
+):
+    def __init__(self, guild_id: int, user_id: int) -> None:
+        self.guild_id = guild_id
+        self.user_id = user_id
+        super().__init__(
+            discord.ui.Button(
+                label="I'm waiting to get verified",
+                emoji="✋",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"ob:wait:v1:{guild_id}:{user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["guild_id"]), int(match["user_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog: "Onboarding | None" = interaction.client.get_cog("Onboarding")
+        if cog is None:
+            await interaction.response.send_message("This isn't available right now.", ephemeral=True)
+            return
+        await cog.handle_waiting(interaction, self.guild_id, self.user_id)
+
+
+class ModActionButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"ob:mod:v1:(?P<action>approve|warn|deny):(?P<guild_id>\d+):(?P<user_id>\d+)",
+):
+    _SPEC = {
+        "approve": ("✅", "Approve", discord.ButtonStyle.success),
+        "warn": ("⚠️", "Needs more info", discord.ButtonStyle.secondary),
+        "deny": ("👢", "Deny & kick", discord.ButtonStyle.danger),
+    }
+
+    def __init__(self, action: str, guild_id: int, user_id: int) -> None:
+        self.action = action
+        self.guild_id = guild_id
+        self.user_id = user_id
+        emoji, label, style = self._SPEC[action]
+        super().__init__(
+            discord.ui.Button(
+                label=label, emoji=emoji, style=style,
+                custom_id=f"ob:mod:v1:{action}:{guild_id}:{user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match["action"], int(match["guild_id"]), int(match["user_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog: "Onboarding | None" = interaction.client.get_cog("Onboarding")
+        if cog is None:
+            await interaction.response.send_message("This isn't available right now.", ephemeral=True)
+            return
+        await cog.handle_mod_action(interaction, self.action, self.guild_id, self.user_id)
+
+
+def build_mod_view(guild_id: int, user_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    for action in ("approve", "warn", "deny"):
+        view.add_item(ModActionButton(action, guild_id, user_id))
+    return view
+
+
+def disabled_view(label: str) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label=label[:80], style=discord.ButtonStyle.secondary, disabled=True))
+    return view
+
+
+# --------------------------------------------------------------------------
+# Static persistent batch-confirm view (log channel)
+# --------------------------------------------------------------------------
+
+class BatchConfirmView(discord.ui.View):
+    def __init__(self, bot: commands.Bot) -> None:
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    async def _guard(self, interaction: discord.Interaction) -> "Onboarding | None":
+        cog: "Onboarding | None" = self.bot.get_cog("Onboarding")
+        member = interaction.user
+        if cog is None or not isinstance(member, discord.Member) or not cog._is_staff(member):
+            await interaction.response.send_message(STAFF_ONLY, ephemeral=True)
+            return None
+        return cog
+
+    @discord.ui.button(label="Send reminders", emoji="📨", style=discord.ButtonStyle.primary, custom_id="ob:batch:v1:remind")
+    async def remind(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        cog = await self._guard(interaction)
+        if cog:
+            await cog.run_batch(interaction, "remind")
+
+    @discord.ui.button(label="Kick overdue", emoji="👢", style=discord.ButtonStyle.danger, custom_id="ob:batch:v1:kick")
+    async def kick(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        cog = await self._guard(interaction)
+        if cog:
+            await cog.run_batch(interaction, "kick")
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="ob:batch:v1:refresh")
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        cog = await self._guard(interaction)
+        if cog:
+            await interaction.response.defer()
+            await cog._post_or_update_summary(interaction.guild or cog._guild())
+
+
+# --------------------------------------------------------------------------
+# Cog
+# --------------------------------------------------------------------------
+
+class Onboarding(commands.Cog, MemberActions):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.config = bot.config
+        self.store = bot.store
+        self.settings = bot.settings
+
+    async def cog_load(self) -> None:
+        self.sweep.start()
+
+    async def cog_unload(self) -> None:
+        self.sweep.cancel()
+
+    # ---- small helpers ---------------------------------------------------
+
+    def _s(self, key: str):
+        return self.settings.get(key)
+
+    def _guild(self) -> discord.Guild | None:
+        gid = self.config.guild_id
+        if gid:
+            return self.bot.get_guild(gid)
+        return self.bot.guilds[0] if self.bot.guilds else None
+
+    def _floofs_role(self, guild: discord.Guild) -> discord.Role | None:
+        rid = self.config.floofs_role_id
+        return guild.get_role(rid) if rid else None
+
+    def _removal_dm(self, guild: discord.Guild) -> str:
+        invite = self._s("invite_link")
+        invite_part = f" here: {invite}" if invite else ""
+        return (
+            f"You've been removed from **{guild.name}** because your verification "
+            f"wasn't completed. You're welcome to rejoin anytime and try again{invite_part}. "
+            "If you keep running into problems, email us at **staff@nyfurs.org** and let us "
+            "know what's going wrong."
+        )
+
+    def _verification_channel_mention(self) -> str:
+        cid = self.config.verification_channel_id
+        return f"<#{cid}>" if cid else "**#verification**"
+
+    # ---- compute eligible members ---------------------------------------
+
+    def _compute(self, guild: discord.Guild) -> tuple[list[discord.Member], list[discord.Member]]:
+        role = self._floofs_role(guild)
+        if role is None:
+            return [], []
+        reminder_h = self._s("onboarding_reminder_hours")
+        kick_h = self._s("onboarding_kick_hours")
+        reminded = self.store.get(REMINDED, {})
+        now = discord.utils.utcnow()
+        due_remind: list[discord.Member] = []
+        due_kick: list[discord.Member] = []
+        for m in guild.members:
+            if m.bot or role in m.roles or m.joined_at is None:
+                continue
+            hours = (now - m.joined_at).total_seconds() / 3600
+            if hours >= kick_h:
+                due_kick.append(m)
+            elif hours >= reminder_h and f"{guild.id}:{m.id}" not in reminded:
+                due_remind.append(m)
+        return due_remind, due_kick
+
+    async def _prune(self, guild: discord.Guild) -> None:
+        """Drop dedupe entries for members who left or already verified."""
+        role = self._floofs_role(guild)
+
+        def mut(d: dict) -> None:
+            for key_name in (REMINDED, ESCALATED):
+                mapping = d.get(key_name)
+                if not mapping:
+                    continue
+                for k in list(mapping.keys()):
+                    try:
+                        _, uid = k.split(":")
+                    except ValueError:
+                        del mapping[k]
+                        continue
+                    m = guild.get_member(int(uid))
+                    if m is None or (role and role in m.roles):
+                        del mapping[k]
+
+        await self.store.update(mut)
+
+    # ---- summary ---------------------------------------------------------
+
+    def _summary_embed(self, guild, due_remind, due_kick, note) -> discord.Embed:
+        e = discord.Embed(title="🧹 Verification sweep", color=discord.Color.orange())
+        e.description = (
+            f"**{len(due_remind)}** member(s) are due a {self._s('onboarding_reminder_hours')}h reminder.\n"
+            f"**{len(due_kick)}** member(s) are past {self._s('onboarding_kick_hours')}h and can be removed."
+        )
+
+        def preview(members: list[discord.Member]) -> str:
+            shown = "\n".join(f"• {m.mention} ({m})" for m in members[:10])
+            if len(members) > 10:
+                shown += f"\n…and {len(members) - 10} more"
+            return shown or "—"
+
+        if due_remind:
+            e.add_field(name="Due a reminder", value=preview(due_remind), inline=False)
+        if due_kick:
+            e.add_field(name="Past the deadline", value=preview(due_kick), inline=False)
+        if not self._s("onboarding_enabled"):
+            e.add_field(name="⏸️ Disabled", value="Set `/config set onboarding_enabled true` to enable.", inline=False)
+        if note:
+            e.add_field(name="Last action", value=note, inline=False)
+        e.set_footer(text=f"Up to {self._s('onboarding_batch_cap')} per click · staff only")
+        return e
+
+    async def _post_or_update_summary(self, guild: discord.Guild | None, note: str | None = None) -> None:
+        if guild is None:
+            return
+        log_id = self.config.log_channel_id
+        channel = self.bot.get_channel(log_id) if log_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        due_remind, due_kick = self._compute(guild)
+        saved = self.store.get(SUMMARY_MSG, {})
+
+        existing = None
+        if saved.get("channel_id") == channel.id and saved.get("message_id"):
+            try:
+                existing = await channel.fetch_message(saved["message_id"])
+            except discord.HTTPException:
+                existing = None
+
+        # Nothing to show and no message to update -> stay quiet.
+        if not due_remind and not due_kick and existing is None and note is None:
+            return
+
+        embed = self._summary_embed(guild, due_remind, due_kick, note)
+        view = BatchConfirmView(self.bot)
+        if existing is not None:
+            await existing.edit(embed=embed, view=view)
+        else:
+            msg = await channel.send(embed=embed, view=view)
+            await self.store.set(SUMMARY_MSG, {"channel_id": channel.id, "message_id": msg.id})
+
+    # ---- batch execution -------------------------------------------------
+
+    async def run_batch(self, interaction: discord.Interaction, kind: str) -> None:
+        await interaction.response.defer()
+        guild = interaction.guild or self._guild()
+        if guild is None:
+            await interaction.followup.send("No server available.", ephemeral=True)
+            return
+        cap = self._s("onboarding_batch_cap")
+        delay = self._s("onboarding_action_delay")
+        actor = interaction.user
+        due_remind, due_kick = self._compute(guild)
+
+        if kind == "remind":
+            targets = due_remind[:cap]
+            sent = skipped = 0
+            for m in targets:
+                if await self._send_reminder(guild, m):
+                    sent += 1
+                else:
+                    skipped += 1
+                await asyncio.sleep(delay)
+            note = f"📨 {actor.display_name} sent {sent} reminder(s)"
+            if skipped:
+                note += f", {skipped} skipped (DMs closed)"
+            if len(due_remind) > len(targets):
+                note += f". {len(due_remind) - len(targets)} still pending — click again"
+            note += "."
+        else:  # kick
+            targets = due_kick[:cap]
+            removed = failed = 0
+            for m in targets:
+                ok = await self._kick(m, by=actor, reason="Unverified past deadline", dm_text=self._removal_dm(guild))
+                if ok:
+                    removed += 1
+                    await asyncio.sleep(delay)
+                else:
+                    # A failure is usually a missing Kick Members permission,
+                    # which would affect everyone — stop early rather than spam.
+                    failed += 1
+                    break
+            note = f"👢 {actor.display_name} removed {removed} member(s)"
+            if failed:
+                note += f", {failed} failed (check my Kick Members permission)"
+            if len(due_kick) > len(targets):
+                note += f". {len(due_kick) - len(targets)} still pending — click again"
+            note += "."
+
+        await self._log_action(note)
+        await self._post_or_update_summary(guild, note=note)
+        await interaction.followup.send(note, ephemeral=True)
+
+    async def _send_reminder(self, guild: discord.Guild, member: discord.Member) -> bool:
+        view = discord.ui.View(timeout=None)
+        view.add_item(WaitingButton(guild.id, member.id))
+        text = (
+            f"👋 Hi! Thanks for joining **{guild.name}**. It looks like you haven't been "
+            f"verified yet. To get full access, please post in {self._verification_channel_mention()} "
+            "and a moderator will approve you.\n"
+            f"⏰ **Heads up:** if you're not verified within the next "
+            f"**{self._s('onboarding_kick_hours') - self._s('onboarding_reminder_hours')} hours**, "
+            "you'll be removed — but you're always welcome to rejoin and try again.\n"
+            "Been waiting a while? Tap the button below and I'll nudge a moderator."
+        )
+        if not await self._try_dm(member, text, view=view):
+            return False
+        key = f"{guild.id}:{member.id}"
+
+        def mut(d: dict) -> None:
+            d.setdefault(REMINDED, {})[key] = int(time.time())
+            stats = d.setdefault(STATS, {})
+            stats["reminded"] = stats.get("reminded", 0) + 1
+
+        await self.store.update(mut)
+        return True
+
+    # ---- member "I'm waiting" button ------------------------------------
+
+    async def handle_waiting(self, interaction: discord.Interaction, guild_id: int, user_id: int) -> None:
+        await interaction.response.defer(ephemeral=True)
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            await interaction.followup.send("That server is unavailable right now.", ephemeral=True)
+            return
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.NotFound:
+                member = None
+        if member is None:
+            await interaction.followup.send("You don't seem to be in the server anymore.", ephemeral=True)
+            return
+
+        role = self._floofs_role(guild)
+        if role and role in member.roles:
+            await interaction.followup.send("You're already verified! 🎉", ephemeral=True)
+            return
+
+        key = f"{guild_id}:{user_id}"
+        if key in self.store.get(ESCALATED, {}):
+            await interaction.followup.send("A moderator has already been notified — hang tight!", ephemeral=True)
+            return
+
+        mod = await self._dm_random_mod(guild, member)
+        if mod is None:
+            await self._escalate_to_log(guild, member)
+
+        await self.store.update(
+            lambda d: d.setdefault(ESCALATED, {}).__setitem__(
+                key, {"at": int(time.time()), "mod_id": mod.id if mod else 0}
+            )
+        )
+        await interaction.followup.send(
+            "✅ Thanks! I've let a moderator know you're waiting — someone will check on your "
+            "verification soon. Hang tight!",
+            ephemeral=True,
+        )
+
+    def _escalation_embed(self, guild: discord.Guild, member: discord.Member) -> discord.Embed:
+        embed = build_userinfo_embed(
+            member, floofs_role_id=self.config.floofs_role_id, title="🔔 Verification request"
+        )
+        embed.description = (
+            f"**{member}** has been waiting **over {self._s('onboarding_reminder_hours')} hours** to be "
+            f"verified in **{guild.name}** and asked for help. Their message should be in "
+            f"{self._verification_channel_mention()}."
+        )
+        return embed
+
+    async def _dm_random_mod(self, guild: discord.Guild, member: discord.Member) -> discord.Member | None:
+        import random
+
+        role = guild.get_role(self.config.staff_role_id) if self.config.staff_role_id else None
+        if role is None:
+            return None
+        candidates = [m for m in role.members if not m.bot]
+        random.shuffle(candidates)
+        embed = self._escalation_embed(guild, member)
+        for mod in candidates[:5]:  # try a few in case some have DMs closed
+            view = build_mod_view(guild.id, member.id)
+            try:
+                await mod.send(embed=embed, view=view)
+                return mod
+            except discord.HTTPException:
+                continue
+        return None
+
+    async def _escalate_to_log(self, guild: discord.Guild, member: discord.Member) -> None:
+        log_id = self.config.log_channel_id
+        channel = self.bot.get_channel(log_id) if log_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        content = (
+            f"<@&{self.config.staff_role_id}> verification help requested"
+            if self.config.staff_role_id else "Verification help requested"
+        )
+        await channel.send(
+            content=content,
+            embed=self._escalation_embed(guild, member),
+            view=build_mod_view(guild.id, member.id),
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+
+    # ---- moderator Approve / Warn / Deny --------------------------------
+
+    async def handle_mod_action(
+        self, interaction: discord.Interaction, action: str, guild_id: int, user_id: int
+    ) -> None:
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            await interaction.response.send_message("That server is unavailable.", ephemeral=True)
+            return
+
+        # Staff guard: re-fetch the acting user as a Member (DMs give a User).
+        actor = guild.get_member(interaction.user.id)
+        if actor is None or not self._is_staff(actor):
+            await interaction.response.send_message(STAFF_ONLY, ephemeral=True)
+            return
+
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.NotFound:
+                member = None
+        if member is None:
+            await interaction.response.edit_message(view=disabled_view("User already left"))
+            await interaction.followup.send("That user is no longer in the server.", ephemeral=True)
+            return
+
+        role = self._floofs_role(guild)
+        if action == "approve":
+            if role and role in member.roles:
+                await interaction.response.edit_message(view=disabled_view("Already verified"))
+                await interaction.followup.send("They're already verified.", ephemeral=True)
+                return
+            await self._grant_floofs(member, by=actor, reason="onboarding escalation")
+            result, label = f"✅ You verified {member.display_name}.", f"✅ Approved by {actor.display_name}"
+        elif action == "warn":
+            await self._warn(member, by=actor, message=self._warn_more_info(guild))
+            result, label = f"⚠️ Asked {member.display_name} for more info.", f"⚠️ More info requested by {actor.display_name}"
+        else:  # deny
+            ok = await self._kick(member, by=actor, reason=f"Verification denied by {actor}", dm_text=self._removal_dm(guild))
+            if ok:
+                result, label = f"👢 {member.display_name} was denied and removed.", f"👢 Denied by {actor.display_name}"
+            else:
+                result, label = "Couldn't remove them — check my Kick Members permission.", "⚠️ Deny failed"
+
+        await interaction.response.edit_message(view=disabled_view(label))
+        await interaction.followup.send(result, ephemeral=True)
+        await self.store.update(lambda d: d.get(ESCALATED, {}).pop(f"{guild_id}:{user_id}", None))
+
+    def _warn_more_info(self, guild: discord.Guild) -> str:
+        return (
+            f"⚠️ Hi! A moderator looked at your verification in **{guild.name}** and needs a bit "
+            f"**more information** before approving you. Please go back to {self._verification_channel_mention()} "
+            "and add more detail (follow the channel's instructions). Reply here if you're unsure what's needed."
+        )
+
+    # ---- background sweep ------------------------------------------------
+
+    @tasks.loop(minutes=30)
+    async def sweep(self) -> None:
+        # Keep the loop interval in sync with the live setting.
+        desired = self._s("onboarding_sweep_minutes")
+        if desired and self.sweep.minutes != desired:
+            self.sweep.change_interval(minutes=desired)
+        if not self._s("onboarding_enabled"):
+            return
+        guild = self._guild()
+        if guild is None:
+            return
+        await self._prune(guild)
+        await self._post_or_update_summary(guild)
+
+    @sweep.before_loop
+    async def _before_sweep(self) -> None:
+        await self.bot.wait_until_ready()
+        guild = self._guild()
+        if guild is not None and not guild.chunked:
+            try:
+                await guild.chunk()
+            except (discord.HTTPException, discord.ClientException):
+                log.exception("Failed to chunk guild members for sweep")
+
+    # ---- manual trigger --------------------------------------------------
+
+    @app_commands.command(
+        name="onboarding_sweep",
+        description="Scan unverified members now and post a staff-confirm summary.",
+    )
+    @is_staff()
+    async def onboarding_sweep(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild or self._guild()
+        if guild is None:
+            await interaction.followup.send("No server available.", ephemeral=True)
+            return
+        if not guild.chunked:
+            try:
+                await guild.chunk()
+            except (discord.HTTPException, discord.ClientException):
+                pass
+        await self._prune(guild)
+        await self._post_or_update_summary(guild, note=f"Triggered by {interaction.user.display_name}")
+        await interaction.followup.send("Posted the onboarding summary in the log channel.", ephemeral=True)
+
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
+        else:
+            log.exception("Command error in Onboarding cog", exc_info=error)
+            msg = "Something went wrong running that command."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(Onboarding(bot))

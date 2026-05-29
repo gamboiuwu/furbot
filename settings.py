@@ -1,0 +1,94 @@
+"""Runtime settings, editable from Discord via /config and persisted to the
+shared store (so they save to Nextcloud and survive restarts/redeploys).
+
+Resolution order for a setting's value:
+  1. a stored override (set with /config set)  -> lives in the WebDAV store
+  2. the environment variable (from config.py)  -> bootstrap default
+  3. the registry default below
+"""
+
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("furbot.settings")
+
+SETTINGS_KEY = "settings"
+
+# name -> (type, default, help text)
+SETTINGS: dict[str, tuple[type, object, str]] = {
+    "onboarding_enabled":        (bool,  False, "Master switch for the unverified-onboarding sweep."),
+    "onboarding_reminder_hours": (int,   12,    "Hours a member can stay unverified before a reminder DM."),
+    "onboarding_kick_hours":     (int,   24,    "Hours unverified before a member becomes kick-eligible."),
+    "onboarding_sweep_minutes":  (int,   30,    "How often the background sweep runs (minutes)."),
+    "onboarding_batch_cap":      (int,   25,    "Max members actioned per confirmed batch click."),
+    "onboarding_action_delay":   (float, 1.5,   "Seconds to wait between batch actions (rate-limit safety)."),
+    "invite_link":               (str,   "",    "Invite link included in the removal DM (optional)."),
+}
+
+
+def _coerce(typ: type, raw):
+    if typ is bool:
+        return str(raw).strip().lower() in ("1", "true", "yes", "on", "y")
+    if typ is int:
+        return int(str(raw).strip())
+    if typ is float:
+        return float(str(raw).strip())
+    return str(raw)
+
+
+class Settings:
+    def __init__(self, store, config) -> None:
+        self.store = store
+        self.config = config
+
+    def _env_default(self, key: str):
+        """The env-var-provided value from config.py, or None if not set."""
+        val = getattr(self.config, key, None)
+        if val is None or val == "":
+            return None
+        return val
+
+    def get(self, key: str):
+        if key not in SETTINGS:
+            raise KeyError(key)
+        typ, default, _ = SETTINGS[key]
+        overrides = self.store.get(SETTINGS_KEY, {})
+        if key in overrides:
+            return overrides[key]
+        env_val = self._env_default(key)
+        if env_val is not None:
+            return env_val
+        return default
+
+    def source(self, key: str) -> str:
+        overrides = self.store.get(SETTINGS_KEY, {})
+        if key in overrides:
+            return "stored"
+        if self._env_default(key) is not None:
+            return "env"
+        return "default"
+
+    async def set(self, key: str, raw) -> object:
+        """Validate, coerce, and persist an override. Raises KeyError for an
+        unknown key, ValueError for a bad value."""
+        if key not in SETTINGS:
+            raise KeyError(key)
+        typ = SETTINGS[key][0]
+        value = _coerce(typ, raw)
+        overrides = dict(self.store.get(SETTINGS_KEY, {}))
+        overrides[key] = value
+        await self.store.set(SETTINGS_KEY, overrides)
+        log.info("Setting %s set to %r", key, value)
+        return value
+
+    async def reset(self, key: str) -> bool:
+        """Remove an override (revert to env/default). Returns True if removed."""
+        if key not in SETTINGS:
+            raise KeyError(key)
+        overrides = dict(self.store.get(SETTINGS_KEY, {}))
+        if key in overrides:
+            del overrides[key]
+            await self.store.set(SETTINGS_KEY, overrides)
+            return True
+        return False

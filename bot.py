@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands
 
 from config import Config
+from settings import Settings
 from store import Store
 from webdav import WebDAVClient
 
@@ -35,6 +36,8 @@ INTENTS.reactions = True        # needed for the reaction-to-role verification f
 INITIAL_COGS = (
     "cogs.general",
     "cogs.verification",
+    "cogs.config",
+    "cogs.onboarding",
 )
 
 
@@ -57,6 +60,8 @@ class FurBot(commands.Bot):
             remote_name="furbot-state.json",
             webdav=webdav,
         )
+        # Runtime settings, persisted to the store and editable via /config.
+        self.settings = Settings(self.store, config)
 
     async def setup_hook(self) -> None:
         # Prepare persistence before any cog needs it.
@@ -78,6 +83,13 @@ class FurBot(commands.Bot):
                 log.info("Loaded cog: %s", cog)
             except Exception:
                 log.exception("Failed to load cog: %s", cog)
+
+        # Register persistent button handlers so they keep working after a
+        # restart. DynamicItems are registered by class; the batch view by
+        # instance (its custom_ids are fixed).
+        from cogs.onboarding import BatchConfirmView, ModActionButton, WaitingButton
+        self.add_dynamic_items(WaitingButton, ModActionButton)
+        self.add_view(BatchConfirmView(self))
 
         # Register slash commands. If a guild ID is configured we sync to
         # that guild for instant availability; otherwise we sync globally

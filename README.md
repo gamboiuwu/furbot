@@ -22,7 +22,27 @@ A Discord bot for the **NYFurs** server and staff team, built with
 - **`/floofcount`** — shows how many members have the Floofs role.
 - **`/ping`** — quick health check.
 
+- **`/config view·set·reset`** — change bot settings from Discord; values are
+  saved to your Nextcloud store and apply live (no redeploy).
+- **`/onboarding_sweep`** — scan unverified members and post a staff-confirm summary.
+
 All commands are **staff only** (configured staff role, or Manage Roles).
+
+### Unverified-member onboarding
+
+When enabled, the bot helps clear the verification backlog without anyone acting
+by hand — but it **never DMs or kicks on its own**. A background sweep posts a
+summary to the log channel; staff click to confirm in capped, rate-limited batches.
+
+- Members unverified for ~12h get a reminder DM with an **"✋ I'm waiting to get
+  verified"** button.
+- Tapping it DMs a **random moderator** a full vetting card (account age, join
+  date, roles) plus **Approve ✅ / Needs more info ⚠️ / Deny & kick 👢** buttons.
+- Members still unverified at ~24h become kick-eligible (removed, can rejoin).
+
+Turn it on from Discord (no Railway editing): `/config set onboarding_enabled true`.
+Tune with `/config set onboarding_reminder_hours 12` etc. The bot needs the
+**Kick Members** permission. All buttons keep working after the bot restarts.
 
 ### Storage / persistence
 

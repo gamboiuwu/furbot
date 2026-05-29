@@ -21,17 +21,15 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from checks import NotStaff, is_staff
+from verification_actions import MemberActions
 
 log = logging.getLogger("furbot.verification")
 
-# Keys in the shared store.
+# Key in the shared store for the temp-ban cooldown list.
 PENDING_UNBANS = "pending_unbans"  # {"guild_id:user_id": unban_at_epoch}
-STATS = "stats"                    # {"verified": n, "rejected": n, "warned": n}
-AUDIT = "audit"                    # list of recent action records (capped)
-AUDIT_CAP = 1000
 
 
-class Verification(commands.Cog):
+class Verification(commands.Cog, MemberActions):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.config = bot.config
@@ -45,14 +43,6 @@ class Verification(commands.Cog):
 
     # ---- helpers ---------------------------------------------------------
 
-    def _is_staff(self, member: discord.Member) -> bool:
-        """A member is staff if they have the configured staff role, or
-        (failing that) the Manage Roles permission."""
-        if self.config.staff_role_id:
-            if any(r.id == self.config.staff_role_id for r in member.roles):
-                return True
-        return member.guild_permissions.manage_roles
-
     @staticmethod
     def _emoji_matches(emoji: discord.PartialEmoji | discord.Emoji | str, target: str) -> bool:
         """True if the reacted emoji matches `target`. Supports unicode emoji
@@ -61,69 +51,6 @@ class Verification(commands.Cog):
             return True
         name = getattr(emoji, "name", None)
         return name is not None and name == target.strip(":")
-
-    async def _log_action(self, message: str) -> None:
-        if not self.config.log_channel_id:
-            return
-        channel = self.bot.get_channel(self.config.log_channel_id)
-        if isinstance(channel, discord.TextChannel):
-            try:
-                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
-            except discord.HTTPException:
-                log.exception("Failed to write to log channel")
-
-    @staticmethod
-    async def _try_dm(member: discord.abc.User, content: str) -> None:
-        """DM a member, ignoring failures (closed DMs, etc.)."""
-        try:
-            await member.send(content)
-        except discord.HTTPException:
-            pass
-
-    @staticmethod
-    def _bump_and_audit(
-        data: dict, action: str, member: discord.Member, by: discord.Member
-    ) -> None:
-        """Mutator: increment the action's counter and append an audit entry."""
-        stats = data.setdefault(STATS, {})
-        stats[action] = stats.get(action, 0) + 1
-        audit = data.setdefault(AUDIT, [])
-        audit.append({
-            "action": action,
-            "user_id": member.id, "user": str(member),
-            "by_id": by.id, "by": str(by),
-            "at": int(time.time()),
-        })
-        if len(audit) > AUDIT_CAP:
-            del audit[: len(audit) - AUDIT_CAP]
-
-    async def _record(self, action: str, member: discord.Member, by: discord.Member) -> None:
-        await self.store.update(lambda d: self._bump_and_audit(d, action, member, by))
-
-    # ---- approve ---------------------------------------------------------
-
-    async def _grant_floofs(
-        self, member: discord.Member, *, by: discord.Member, reason: str
-    ) -> bool:
-        """Add the Floofs role to `member`. Returns True if newly added."""
-        role = member.guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
-        if role is None:
-            log.warning("Floofs role not found (FLOOFS_ROLE_ID=%s)", self.config.floofs_role_id)
-            return False
-        if role in member.roles:
-            return False
-        await member.add_roles(role, reason=f"Verified by {by} ({reason})")
-        log.info("Granted Floofs to %s (by %s)", member, by)
-        await self._log_action(
-            f"🐾 **{member.display_name}** was verified by **{by.display_name}**."
-        )
-        await self._try_dm(
-            member,
-            f"Welcome to **{member.guild.name}**! You've been verified and given "
-            f"the **{role.name}** role. 🐾",
-        )
-        await self._record("verified", member, by)
-        return True
 
     # ---- reject (temp-ban with cooldown) ---------------------------------
 
@@ -169,23 +96,6 @@ class Verification(commands.Cog):
             f"⛔ **{member.display_name}** was not verified by **{by.display_name}** "
             f"and was banned for {hours}h (auto-unban scheduled)."
         )
-
-    # ---- warn ------------------------------------------------------------
-
-    async def _warn(self, member: discord.Member, *, by: discord.Member) -> None:
-        await self._try_dm(
-            member,
-            f"Hi! A staff member reviewed your verification in **{member.guild.name}** "
-            "and it looks like something wasn't quite right with how you verified. "
-            "Please re-read the verification instructions and try again. If you're "
-            "unsure what needs fixing, reply to the staff team and we'll help you out. 🐾",
-        )
-        log.info("Warned %s (by %s)", member, by)
-        await self._log_action(
-            f"⚠️ **{member.display_name}** was warned by **{by.display_name}** "
-            "to redo their verification."
-        )
-        await self._record("warned", member, by)
 
     # ---- reaction dispatch ----------------------------------------------
 
