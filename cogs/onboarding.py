@@ -15,6 +15,7 @@ All buttons are persistent across restarts:
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
 
@@ -618,11 +619,28 @@ class Onboarding(commands.Cog, MemberActions):
             f"📢 {mod.mention} has their DMs closed (or *blocked me* 😤), so I can't send them "
             "verification pings. Everyone point and laugh 👉😹"
         )
-        image = self._s("blocked_image_url")
-        if image:
-            text += f"\n{image}"
+
+        # Prefer an image stored on the WebDAV drive (attached as a file); fall
+        # back to an external URL if no WebDAV file is configured/available.
+        kwargs: dict = {"allowed_mentions": discord.AllowedMentions(users=True)}
+        fname = self._s("blocked_image_file")
+        webdav = getattr(self.store, "webdav", None)
+        attached = False
+        if fname and webdav is not None:
+            try:
+                data = await webdav.download(fname)
+                if data:
+                    kwargs["file"] = discord.File(io.BytesIO(data), filename=fname)
+                    attached = True
+            except Exception:
+                log.exception("Failed to fetch blocked-callout image from WebDAV")
+        if not attached:
+            url = self._s("blocked_image_url")
+            if url:
+                text += f"\n{url}"
+
         try:
-            await channel.send(text, allowed_mentions=discord.AllowedMentions(users=True))
+            await channel.send(text, **kwargs)
             await self.store.update(
                 lambda d: d.setdefault(BLOCKED_CALLOUT, {}).__setitem__(str(mod.id), int(time.time()))
             )
