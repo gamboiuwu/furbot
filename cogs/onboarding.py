@@ -269,6 +269,10 @@ class Onboarding(commands.Cog, MemberActions):
             if str(m.id) in answered:
                 continue  # they answered → staff's discretion
             notified_at = reminded.get(f"{guild.id}:{m.id}")
+            # If they rejoined after that reminder, the old timestamp is stale —
+            # treat them as fresh so they get the full reminder window again.
+            if notified_at is not None and m.joined_at and notified_at < m.joined_at.timestamp():
+                notified_at = None
             if notified_at is not None:
                 if now_ts - notified_at >= grace_s:
                     due_kick.append(m)
@@ -823,6 +827,21 @@ class Onboarding(commands.Cog, MemberActions):
         await self.bot.wait_until_ready()
 
     # ---- "answered but still waiting" escalation ------------------------
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member) -> None:
+        """A (re)join starts the clock over — clear any stale onboarding state so
+        a returning member isn't instantly reminded or kicked from old data."""
+        gid = member.guild.id
+        uid = str(member.id)
+
+        def mut(d: dict) -> None:
+            d.get(REMINDED, {}).pop(f"{gid}:{uid}", None)
+            d.get(WARN_DEADLINE, {}).pop(uid, None)
+            d.get(VERIFY_WAITING, {}).pop(uid, None)
+            d.get(VERIFY_MESSAGES, {}).pop(uid, None)
+
+        await self.store.update(mut)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
