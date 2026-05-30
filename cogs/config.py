@@ -69,6 +69,7 @@ class ConfigCog(commands.Cog):
                 f"`{value}` isn't a valid **{typ}** for `{key}`.", ephemeral=True
             )
             return
+        await self.bot.save_config_snapshot()
         await interaction.response.send_message(
             f"✅ `{key}`: **{old!r}** → **{new!r}** (saved).", ephemeral=True
         )
@@ -83,6 +84,7 @@ class ConfigCog(commands.Cog):
             return
         removed = await self.bot.settings.reset(key)
         now = self.bot.settings.get(key)
+        await self.bot.save_config_snapshot()
         msg = f"↩️ `{key}` reset — now **{now!r}**." if removed else f"`{key}` had no override; it's **{now!r}**."
         await interaction.response.send_message(msg, ephemeral=True)
 

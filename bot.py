@@ -86,6 +86,9 @@ class FurBot(commands.Bot):
             "onboarding.reminded": {},
             "onboarding.escalated": {},
         })
+        # Write a complete snapshot of all configuration (core + settings) to
+        # config.json on the WebDAV drive.
+        await self.save_config_snapshot()
 
         # Load every feature module.
         for cog in INITIAL_COGS:
@@ -117,6 +120,25 @@ class FurBot(commands.Bot):
         else:
             synced = await self.tree.sync()
             log.info("Synced %d slash command(s) globally", len(synced))
+
+    async def save_config_snapshot(self) -> None:
+        """Write a complete, non-secret snapshot of all configuration (the core
+        env config + every effective /config setting) to config.json on WebDAV."""
+        import dataclasses
+
+        from settings import SETTINGS
+
+        core = dataclasses.asdict(self.config)
+        for secret in ("token", "webdav_url", "webdav_username", "webdav_password"):
+            core.pop(secret, None)
+        snapshot = {
+            "core_config": core,
+            "settings": {key: self.settings.get(key) for key in SETTINGS},
+        }
+        try:
+            await self.store.set("config", snapshot)
+        except Exception:
+            log.exception("Failed to save config snapshot")
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id: %s)", self.user, self.user.id if self.user else "?")
