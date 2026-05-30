@@ -25,6 +25,7 @@ AUDIT = "audit"          # list of recent action records (capped)
 AUDIT_CAP = 1000
 STAFF_MONTHLY = "staff_monthly"  # {"YYYY-MM": {staff_id: {action: n, "name": str}}}
 WARN_DEADLINE = "warn_deadline"  # {user_id_str: kick_at_epoch} — set when warned
+VERIFICATIONS = "verifications"  # {user_id_str: {by_id, by, by_name, at}} — who verified whom
 
 
 def month_key(now: datetime.datetime | None = None, tz_name: str = "America/New_York") -> str:
@@ -37,7 +38,8 @@ def month_key(now: datetime.datetime | None = None, tz_name: str = "America/New_
 
 
 def build_userinfo_embed(
-    member: discord.Member, *, floofs_role_id: int | None, title: str | None = None
+    member: discord.Member, *, floofs_role_id: int | None, title: str | None = None,
+    verified_by: dict | None = None,
 ) -> discord.Embed:
     """Build the vetting card used by /userinfo and the moderator escalation DM."""
     created_ts = int(member.created_at.timestamp())
@@ -68,7 +70,15 @@ def build_userinfo_embed(
         )
 
     verified = bool(floofs_role_id) and any(r.id == floofs_role_id for r in member.roles)
-    embed.add_field(name="Verified?", value="✅ Yes" if verified else "❌ Not yet", inline=False)
+    if verified and verified_by:
+        who = verified_by.get("by_name") or verified_by.get("by") or "unknown"
+        when = f" on <t:{int(verified_by['at'])}:D>" if verified_by.get("at") else ""
+        verified_val = f"✅ Verified by **{who}**{when}"
+    elif verified:
+        verified_val = "✅ Yes"
+    else:
+        verified_val = "❌ Not yet"
+    embed.add_field(name="Verified?", value=verified_val, inline=False)
 
     roles = [r.mention for r in reversed(member.roles) if not r.is_default()]
     value = ", ".join(roles) if roles else "None"
@@ -166,6 +176,11 @@ class MemberActions:
         )
         await self._post_welcome(member)
         await self._record("verified", member, by)
+        # Keep a per-user record of who verified them and when.
+        await self.store.update(lambda d: d.setdefault(VERIFICATIONS, {}).__setitem__(
+            str(member.id),
+            {"by_id": by.id, "by": str(by), "by_name": by.display_name, "at": int(time.time())},
+        ))
         # Clear any pending warn-kick countdown now that they're verified.
         if str(member.id) in self.store.get(WARN_DEADLINE, {}):
             await self.store.update(lambda d: d.get(WARN_DEADLINE, {}).pop(str(member.id), None))

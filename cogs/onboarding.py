@@ -24,7 +24,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from checks import NotStaff, is_staff
-from verification_actions import STATS, WARN_DEADLINE, MemberActions, build_userinfo_embed
+from verification_actions import STATS, VERIFICATIONS, WARN_DEADLINE, MemberActions, build_userinfo_embed
 
 log = logging.getLogger("furbot.onboarding")
 
@@ -523,7 +523,8 @@ class Onboarding(commands.Cog, MemberActions):
         messages: list[dict] | None = None,
     ) -> discord.Embed:
         embed = build_userinfo_embed(
-            member, floofs_role_id=self.config.floofs_role_id, title="🔔 Verification request"
+            member, floofs_role_id=self.config.floofs_role_id, title="🔔 Verification request",
+            verified_by=self.store.get(VERIFICATIONS, {}).get(str(member.id)),
         )
         chan = self._verification_channel_mention()
         if reason == "phone":

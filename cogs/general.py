@@ -13,7 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from checks import NotStaff, is_staff
-from verification_actions import build_userinfo_embed
+from verification_actions import VERIFICATIONS, build_userinfo_embed
 
 log = logging.getLogger("furbot.general")
 
@@ -101,8 +101,9 @@ class General(commands.Cog):
     @app_commands.describe(member="The member to look up")
     @is_staff()
     async def userinfo(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        record = self.bot.store.get(VERIFICATIONS, {}).get(str(member.id))
         embed = build_userinfo_embed(
-            member, floofs_role_id=getattr(self.bot.config, "floofs_role_id", None)
+            member, floofs_role_id=getattr(self.bot.config, "floofs_role_id", None), verified_by=record
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
