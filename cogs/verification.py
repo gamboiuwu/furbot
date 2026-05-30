@@ -60,6 +60,15 @@ class Verification(commands.Cog, MemberActions):
         guild = member.guild
         hours = self.config.reject_cooldown_hours
 
+        # Never ban an already-verified member.
+        floofs = guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
+        if floofs is not None and floofs in member.roles:
+            log.warning("Refused to reject already-verified member %s", member)
+            await self._log_action(
+                f"⚠️ Did not reject **{member.display_name}** — they already have **{floofs.name}**."
+            )
+            return
+
         # DM first — once banned we may no longer share a server to DM them.
         await self._try_dm(
             member,
@@ -137,6 +146,16 @@ class Verification(commands.Cog, MemberActions):
 
         target = message.author
         if not isinstance(target, discord.Member) or target.bot:
+            return
+
+        # Safety: never reject/warn someone who's already verified — that would
+        # ban/bother an existing member. (Approve on them is a harmless no-op.)
+        floofs = guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
+        if action in ("reject", "warn") and floofs is not None and floofs in target.roles:
+            await self._log_action(
+                f"⚠️ Ignored a **{action}** reaction on **{target.display_name}** — they're already "
+                f"verified (has **{floofs.name}**), so no action was taken."
+            )
             return
 
         if action == "approve":
