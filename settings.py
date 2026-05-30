@@ -65,6 +65,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "task_done_emoji":           (str,   "✅",   "React with this on a task's first post to mark it complete."),
     "task_nudge_first_days":     (int,   3,     "Days of inactivity before the first nudge to a task's owner."),
     "task_nudge_repeat_days":    (int,   7,     "Days between repeat nudges after the first."),
+    "dm_relay_enabled":          (bool,  True,  "Greet people who DM the bot and forward their questions/comments to a moderator."),
 }
 
 

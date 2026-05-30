@@ -42,6 +42,7 @@ INITIAL_COGS = (
     "cogs.leaderboard",
     "cogs.review",
     "cogs.taskboard",
+    "cogs.dmrelay",
 )
 
 

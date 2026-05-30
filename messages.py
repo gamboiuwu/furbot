@@ -296,3 +296,37 @@ MOD_THANKS = [
     "thank youuuu~ i'll stop bothering you now, you absolute legend TwT",
 ]
 
+
+# Replied when someone DMs the bot (greeting). No tokens.
+DM_GREET = [
+    "Hi there! Do you have any questions or comments for the staff? Just type them here and I'll pass them along to a moderator for you. ^_^",
+    "Hey! Got a question or something on your mind? Drop it here and I'll forward it to a mod~",
+    "Hello! If you have any questions or comments, type them here and I'll make sure a moderator sees them.",
+    "Hi! Anything you'd like to ask or share with the team? Just send it here and I'll relay it to a moderator. owo",
+    "Heya~ if there's something you need, type it out and I'll pass it on to a mod for you!",
+    "Hi there! Need a hand with something? Send your question or comment here and I'll get it to a moderator. ^w^",
+    "Hello! Feel free to ask me anything for the staff — I'll forward it along to a moderator. :3",
+    "Hey! Is there something you wanted to ask or tell the team? Type it here and I'll pass it on~",
+    "Hi! If you've got a question or comment, just send it over and I'll relay it to a moderator for you.",
+    "Heya! Anything on your mind for the staff? Drop it here and a moderator will be looped in. ^_^",
+    "Hi there! Happy to help — send any questions or comments here and I'll forward them to a mod.",
+    "Hello! What can we do for you? Type your question or comment and I'll get it to a moderator. owo",
+]
+
+
+# Acked to the user after their message is relayed to a moderator. No tokens.
+DM_RELAY_ACK = [
+    "Thanks! I've passed that along to a moderator — someone will reach out if needed. ^_^",
+    "Got it~ I've forwarded that to a mod for you. They'll follow up if there's anything to add!",
+    "Sent! A moderator has your message now. Thanks for reaching out. owo",
+    "Done~ I've relayed that to the staff. Hang tight and someone will get back to you if needed.",
+    "Thanks for letting us know! I've passed it on to a moderator. ^w^",
+    "All forwarded! A mod will take a look. Appreciate you reaching out. :3",
+    "Okay, that's on its way to a moderator now. Thank you!",
+    "I've handed that off to the staff for you~ they'll follow up if there's more to say. ^_^",
+    "Message received and forwarded to a mod! Thanks for your patience. owo",
+    "Got your message — a moderator has it now. Thanks so much!",
+    "Passed along! Someone from the team will see it. Thank you for reaching out~ ^w^",
+    "Done and sent to a moderator. We'll be in touch if needed — thanks!",
+]
+
