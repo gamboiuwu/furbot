@@ -115,6 +115,11 @@ class Config:
     blocked_callout_enabled: bool | None
     blocked_image_file: str | None
     blocked_image_url: str | None
+    task_enabled: bool | None
+    task_forum_id: int | None
+    task_done_emoji: str | None
+    task_nudge_first_days: int | None
+    task_nudge_repeat_days: int | None
     review_enabled: bool | None
     feedback_channel_id: int | None
     review_after_days: int | None
@@ -196,4 +201,9 @@ class Config:
             review_batch=_get_int("REVIEW_BATCH"),
             review_interval_minutes=_get_int("REVIEW_INTERVAL_MINUTES"),
             review_recheck_days=_get_int("REVIEW_RECHECK_DAYS"),
+            task_enabled=_get_bool("TASK_ENABLED"),
+            task_forum_id=_get_int("TASK_FORUM_ID"),
+            task_done_emoji=os.getenv("TASK_DONE_EMOJI", "").strip() or None,
+            task_nudge_first_days=_get_int("TASK_NUDGE_FIRST_DAYS"),
+            task_nudge_repeat_days=_get_int("TASK_NUDGE_REPEAT_DAYS"),
         )

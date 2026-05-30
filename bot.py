@@ -41,6 +41,7 @@ INITIAL_COGS = (
     "cogs.birthday",
     "cogs.leaderboard",
     "cogs.review",
+    "cogs.taskboard",
 )
 
 

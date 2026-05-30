@@ -60,6 +60,11 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
         "Just type:\n`/birthday set [day] [month] [year]`\n\n"
         "Totally optional—no pressure, but you'd get a shoutout for the day! >:3",
         "The recurring birthday-feature invite message."),
+    "task_enabled":              (bool,  True,  "Enable the staff task-forum assistant (nudges, board, completion)."),
+    "task_forum_id":             (int,   1272358508121034802, "Forum channel used as the staff to-do board."),
+    "task_done_emoji":           (str,   "✅",   "React with this on a task's first post to mark it complete."),
+    "task_nudge_first_days":     (int,   3,     "Days of inactivity before the first nudge to a task's owner."),
+    "task_nudge_repeat_days":    (int,   7,     "Days between repeat nudges after the first."),
 }
 
 
