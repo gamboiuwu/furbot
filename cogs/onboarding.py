@@ -23,6 +23,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import messages
 from checks import NotStaff, is_staff
 from verification_actions import STATS, VERIFICATIONS, WARN_DEADLINE, MemberActions, build_userinfo_embed
 
@@ -591,8 +592,8 @@ class Onboarding(commands.Cog, MemberActions):
             return None
         candidates = [m for m in role.members if not m.bot]
         random.shuffle(candidates)
-        messages = await self._collect_messages(guild, member)
-        embed = self._escalation_embed(guild, member, reason, messages)
+        msgs = await self._collect_messages(guild, member)
+        embed = self._escalation_embed(guild, member, reason, msgs)
         for mod in candidates[:5]:  # try a few in case some have DMs closed
             view = build_mod_view(guild.id, member.id)
             try:
@@ -659,10 +660,10 @@ class Onboarding(commands.Cog, MemberActions):
             f"<@&{self.config.staff_role_id}> verification help requested"
             if self.config.staff_role_id else "Verification help requested"
         )
-        messages = await self._collect_messages(guild, member)
+        msgs = await self._collect_messages(guild, member)
         await channel.send(
             content=content,
-            embed=self._escalation_embed(guild, member, reason, messages),
+            embed=self._escalation_embed(guild, member, reason, msgs),
             view=build_mod_view(guild.id, member.id),
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
@@ -703,7 +704,7 @@ class Onboarding(commands.Cog, MemberActions):
             await self._grant_floofs(member, by=actor, reason="onboarding escalation")
             result, label = f"✅ You verified {member.display_name}.", f"✅ Approved by {actor.display_name}"
         elif action == "warn":
-            await self._warn(member, by=actor, message=self._warn_more_info(guild))
+            await self._warn(member, by=actor)  # randomized "needs more info" message
             result, label = f"⚠️ Asked {member.display_name} for more info.", f"⚠️ More info requested by {actor.display_name}"
         else:  # deny
             ok = await self._kick(member, by=actor, reason=f"Verification denied by {actor}", dm_text=self._removal_dm(guild))
@@ -713,6 +714,9 @@ class Onboarding(commands.Cog, MemberActions):
                 result, label = "Couldn't remove them — check my Kick Members permission.", "⚠️ Deny failed"
 
         await interaction.response.edit_message(view=disabled_view(label))
+        # If we'd been nudging this mod, thank them sweetly for finally getting to it.
+        if result.startswith(("✅", "⚠️", "👢")):
+            result += "\n" + messages.pick(messages.MOD_THANKS)
         await interaction.followup.send(result, ephemeral=True)
         await self.store.update(lambda d: d.get(ESCALATED, {}).pop(f"{guild_id}:{user_id}", None))
 
@@ -900,9 +904,9 @@ class Onboarding(commands.Cog, MemberActions):
 
     async def _followup_mod(self, guild: discord.Guild, member: discord.Member, mod_id: int) -> None:
         """Nudge the moderator who was pinged but hasn't acted."""
-        content = f"are you still there? >:c — **{member}** is **still** waiting to be verified."
-        messages = await self._collect_messages(guild, member)
-        embed = self._escalation_embed(guild, member, "pending", messages)
+        content = messages.pick(messages.MOD_FOLLOWUP, member=member.display_name)
+        msgs = await self._collect_messages(guild, member)
+        embed = self._escalation_embed(guild, member, "pending", msgs)
         mod = guild.get_member(mod_id) if mod_id else None
         if mod is not None:
             try:

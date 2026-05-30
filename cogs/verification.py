@@ -20,6 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import messages
 from checks import NotStaff, is_staff
 from verification_actions import MemberActions
 
@@ -62,9 +63,8 @@ class Verification(commands.Cog, MemberActions):
         # DM first — once banned we may no longer share a server to DM them.
         await self._try_dm(
             member,
-            f"You were **not verified** in **{guild.name}**. There is a "
-            f"**{hours}-hour cooldown** before you can rejoin and try again. "
-            "If you believe this was a mistake, please reach out to the staff team.",
+            messages.pick(messages.REJECTED, server=guild.name, hours=hours)
+            + "\nIf you think this was a mistake, just reach out to the staff team.",
         )
 
         try:

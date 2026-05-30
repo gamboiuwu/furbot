@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 
 import discord
 
+import messages
+
 log = logging.getLogger("furbot.actions")
 
 # Shared store keys for stats and the audit log.
@@ -171,8 +173,7 @@ class MemberActions:
         )
         await self._try_dm(
             member,
-            f"Welcome to **{member.guild.name}**! You've been verified and given "
-            f"the **{role.name}** role. 🐾",
+            messages.pick(messages.VERIFIED, server=member.guild.name, role=role.name),
         )
         await self._post_welcome(member)
         await self._record("verified", member, by)
@@ -212,14 +213,7 @@ class MemberActions:
     ) -> None:
         cid = getattr(self.config, "verification_channel_id", None)
         chan = f"<#{cid}>" if cid else "the verification channel"
-        content = message or (
-            f"Hey there! Thanks for joining **{member.guild.name}** — we're really glad you're here. "
-            "Before we can give you full access, we'd love to get to know you a little. Whenever you "
-            f"get a chance, pop back into {chan} and tell us a bit about yourself: who you are, how you "
-            "found us, and what you're hoping to do or find in the community. Just a few honest "
-            "sentences is perfect — it helps us know you're a real person who wants to be part of the "
-            "group. Thanks, and welcome!"
-        )
+        content = message or messages.pick(messages.NEEDS_INFO, server=member.guild.name, chan=chan)
         await self._try_dm(member, content)
         log.info("Warned %s (by %s)", member, by)
         await self._log_action(
