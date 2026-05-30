@@ -84,10 +84,11 @@ class General(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="🎂 Birthdays (everyone)",
+            name="🎂 Birthdays & fun (everyone)",
             value=(
                 "**/birthday set [day] [month] [year]** — save your birthday for a shoutout + the Birthday role\n"
-                "**/birthday view** · **/birthday clear**"
+                "**/birthday view** · **/birthday clear**\n"
+                "**/echo [message]** — have the bot repeat your message (no pings)"
             ),
             inline=False,
         )
@@ -126,6 +127,15 @@ class General(commands.Cog):
     async def ping(self, interaction: discord.Interaction) -> None:
         latency_ms = round(self.bot.latency * 1000)
         await interaction.response.send_message(f"🏓 Pong! Latency: {latency_ms}ms", ephemeral=True)
+
+    @app_commands.command(name="echo", description="Have the bot repeat your message.")
+    @app_commands.describe(message="What should I say?")
+    async def echo(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 2000]) -> None:
+        # Public command (anyone). Send with ALL mentions disabled so it can't
+        # be used to ping @everyone/@here, roles, or mass-mention users.
+        await interaction.response.send_message(
+            message, allowed_mentions=discord.AllowedMentions.none()
+        )
 
     @app_commands.command(name="floofcount", description="See how many members currently have the Floofs role.")
     @is_staff()
