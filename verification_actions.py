@@ -167,6 +167,19 @@ class MemberActions:
         if role in member.roles:
             return False
         await member.add_roles(role, reason=f"Verified by {by} ({reason})")
+        # Also clear Discord's membership screening ("Verify Member") so they
+        # actually get access to the server, not just the role.
+        if getattr(member, "pending", False):
+            try:
+                await member.edit(bypass_verification=True, reason=f"Verified by {by}")
+            except discord.Forbidden:
+                log.warning("Missing permission to bypass membership screening for %s", member)
+                await self._log_action(
+                    f"⚠️ Gave **{member.display_name}** the role but couldn't clear membership "
+                    "screening — I need the **Moderate Members** permission for that."
+                )
+            except (discord.HTTPException, TypeError):
+                log.exception("Failed to bypass membership screening for %s", member)
         log.info("Granted Floofs to %s (by %s)", member, by)
         await self._log_action(
             f"🐾 **{member.display_name}** was verified by **{by.display_name}**."
