@@ -24,6 +24,7 @@ STATS = "stats"          # {"verified": n, "rejected": n, "warned": n, ...}
 AUDIT = "audit"          # list of recent action records (capped)
 AUDIT_CAP = 1000
 STAFF_MONTHLY = "staff_monthly"  # {"YYYY-MM": {staff_id: {action: n, "name": str}}}
+WARN_DEADLINE = "warn_deadline"  # {user_id_str: kick_at_epoch} — set when warned
 
 
 def month_key(now: datetime.datetime | None = None, tz_name: str = "America/New_York") -> str:
@@ -165,6 +166,9 @@ class MemberActions:
         )
         await self._post_welcome(member)
         await self._record("verified", member, by)
+        # Clear any pending warn-kick countdown now that they're verified.
+        if str(member.id) in self.store.get(WARN_DEADLINE, {}):
+            await self.store.update(lambda d: d.get(WARN_DEADLINE, {}).pop(str(member.id), None))
         return True
 
     async def _post_welcome(self, member: discord.Member) -> None:
@@ -204,6 +208,19 @@ class MemberActions:
             "to redo their verification."
         )
         await self._record("warned", member, by)
+        # Start (reset) a kick countdown: if they don't fix it in time, they
+        # become kick-eligible. Default 24h, configurable via warn_grace_hours.
+        hours = 24
+        settings = getattr(self, "settings", None)
+        if settings is not None:
+            try:
+                hours = int(settings.get("warn_grace_hours"))
+            except Exception:
+                hours = 24
+        deadline = int(time.time()) + hours * 3600
+        await self.store.update(
+            lambda d: d.setdefault(WARN_DEADLINE, {}).__setitem__(str(member.id), deadline)
+        )
 
     # ---- kick ------------------------------------------------------------
 

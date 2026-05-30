@@ -23,7 +23,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from checks import NotStaff, is_staff
-from verification_actions import STATS, MemberActions, build_userinfo_embed
+from verification_actions import STATS, WARN_DEADLINE, MemberActions, build_userinfo_embed
 
 log = logging.getLogger("furbot.onboarding")
 
@@ -33,6 +33,7 @@ ESCALATED = "onboarding.escalated"    # {"guild:user": {"at": epoch, "mod_id": i
 SUMMARY_MSG = "onboarding.summary_msg"  # {"channel_id": int, "message_id": int}
 # Members who posted in the verify channel and are awaiting a manual push.
 VERIFY_WAITING = "verify_waiting"     # {user_id: {at, escalated_at, mod_id, followed_up}}
+VERIFY_MESSAGES = "verify_messages"   # {user_id: [{"c": content, "t": epoch}, ...]} (cap 5)
 
 STAFF_ONLY = "🔒 This action is for staff only."
 
@@ -247,12 +248,20 @@ class Onboarding(commands.Cog, MemberActions):
         # Members who posted in the verify channel are handled by staff, never
         # auto-reminded or auto-kicked — they made the effort.
         answered = self.store.get(VERIFY_WAITING, {})
+        # Members a mod warned ("needs more info") get a fixed countdown to kick.
+        warn_deadlines = self.store.get(WARN_DEADLINE, {})
         now = discord.utils.utcnow()
         now_ts = time.time()
         due_remind: list[discord.Member] = []
         due_kick: list[discord.Member] = []
         for m in guild.members:
             if m.bot or role in m.roles or m.joined_at is None:
+                continue
+            warn_at = warn_deadlines.get(str(m.id))
+            if warn_at is not None:
+                # Warned: kick once their countdown expires; until then, leave them be.
+                if now_ts >= warn_at:
+                    due_kick.append(m)
                 continue
             if str(m.id) in answered:
                 continue  # they answered → staff's discretion
@@ -283,6 +292,15 @@ class Onboarding(commands.Cog, MemberActions):
                     m = guild.get_member(int(uid))
                     if m is None or (role and role in m.roles):
                         del mapping[k]
+            # Warn deadlines and answered-tracking are keyed by bare user id.
+            for key_name in (WARN_DEADLINE, VERIFY_WAITING):
+                mapping = d.get(key_name)
+                if not mapping:
+                    continue
+                for uid in list(mapping.keys()):
+                    m = guild.get_member(int(uid))
+                    if m is None or (role and role in m.roles):
+                        del mapping[uid]
 
         await self.store.update(mut)
 
@@ -500,7 +518,7 @@ class Onboarding(commands.Cog, MemberActions):
 
     def _escalation_embed(
         self, guild: discord.Guild, member: discord.Member, reason: str = "waiting",
-        messages: list[discord.Message] | None = None,
+        messages: list[dict] | None = None,
     ) -> discord.Embed:
         embed = build_userinfo_embed(
             member, floofs_role_id=self.config.floofs_role_id, title="🔔 Verification request"
@@ -508,42 +526,52 @@ class Onboarding(commands.Cog, MemberActions):
         chan = self._verification_channel_mention()
         if reason == "phone":
             embed.description = (
-                f"📱 **{member}** says they **can't set up a verified phone number** and is asking for a "
-                f"**manual review** in **{guild.name}**. Please check {chan} and decide below."
+                f"📱 **{member}** tapped **\"Can't verify my phone\"** in **{guild.name}** and is asking "
+                f"for a **manual review**. Please check {chan} and decide below."
             )
         elif reason == "pending":
             embed.description = (
-                f"⏳ **{member}** answered in {chan} and has been waiting **over "
+                f"⏳ **{member}** posted in {chan} and has been waiting **over "
                 f"{self._s('verify_escalate_hours')} hours** to be verified in **{guild.name}**. "
                 "Please review and push them through."
             )
         else:
             embed.description = (
-                f"**{member}** has been waiting **over {self._s('onboarding_reminder_hours')} hours** to be "
-                f"verified in **{guild.name}** and asked for help. Their message should be in {chan}."
+                f"✋ **{member}** tapped **\"I'm waiting to get verified\"** in **{guild.name}** and asked "
+                f"for a moderator. Their answers in {chan} (if any) are below."
             )
-        for i, msg in enumerate(messages or [], 1):
-            content = (msg.content or "").strip()
-            if msg.attachments:
-                content += ("\n" if content else "") + "📎 " + ", ".join(a.filename for a in msg.attachments)
-            ts = f"<t:{int(msg.created_at.timestamp())}:R>"
-            embed.add_field(name=f"📝 Their message {i} · {ts}", value=(content or "(no text)")[:1024], inline=False)
+        if messages:
+            for i, msg in enumerate(messages, 1):
+                ts = f"<t:{int(msg.get('t', 0))}:R>" if msg.get("t") else ""
+                content = (msg.get("c") or "(no text)").strip()
+                embed.add_field(name=f"📝 Their message {i} · {ts}".strip(" ·"), value=content[:1024], inline=False)
+        else:
+            embed.add_field(
+                name="📝 Their messages",
+                value=f"They haven't posted in {chan} yet (they may have only tapped the button).",
+                inline=False,
+            )
         return embed
 
-    async def _recent_user_messages(
-        self, guild: discord.Guild, member: discord.Member, limit: int = 5, scan: int = 300
-    ) -> list[discord.Message]:
-        """The member's most recent messages in the verification channel (oldest-first)."""
+    async def _collect_messages(self, guild: discord.Guild, member: discord.Member) -> list[dict]:
+        """The member's recent verification-channel messages as {"c","t"} dicts.
+        Prefers messages captured when posted; falls back to a history scan."""
+        stored = self.store.get(VERIFY_MESSAGES, {}).get(str(member.id))
+        if stored:
+            return stored[-5:]
         cid = self.config.verification_channel_id
         channel = self.bot.get_channel(cid) if cid else None
         if not isinstance(channel, discord.TextChannel):
             return []
-        found: list[discord.Message] = []
+        found: list[dict] = []
         try:
-            async for msg in channel.history(limit=scan):
+            async for msg in channel.history(limit=500):
                 if msg.author.id == member.id and (msg.content or msg.attachments):
-                    found.append(msg)
-                    if len(found) >= limit:
+                    content = (msg.content or "").strip()
+                    if msg.attachments:
+                        content += ("\n" if content else "") + "📎 " + ", ".join(a.filename for a in msg.attachments)
+                    found.append({"c": content[:1000], "t": int(msg.created_at.timestamp())})
+                    if len(found) >= 5:
                         break
         except discord.HTTPException:
             return []
@@ -560,7 +588,7 @@ class Onboarding(commands.Cog, MemberActions):
             return None
         candidates = [m for m in role.members if not m.bot]
         random.shuffle(candidates)
-        messages = await self._recent_user_messages(guild, member)
+        messages = await self._collect_messages(guild, member)
         embed = self._escalation_embed(guild, member, reason, messages)
         for mod in candidates[:5]:  # try a few in case some have DMs closed
             view = build_mod_view(guild.id, member.id)
@@ -582,7 +610,7 @@ class Onboarding(commands.Cog, MemberActions):
             f"<@&{self.config.staff_role_id}> verification help requested"
             if self.config.staff_role_id else "Verification help requested"
         )
-        messages = await self._recent_user_messages(guild, member)
+        messages = await self._collect_messages(guild, member)
         await channel.send(
             content=content,
             embed=self._escalation_embed(guild, member, reason, messages),
@@ -754,15 +782,22 @@ class Onboarding(commands.Cog, MemberActions):
         role = self._floofs_role(member.guild)
         if role is not None and role in member.roles:
             return  # already verified
-        waiting = self.store.get(VERIFY_WAITING, {})
-        if str(member.id) in waiting:
-            return  # keep the original "waiting since" time
-        await self.store.update(
-            lambda d: d.setdefault(VERIFY_WAITING, {}).__setitem__(
-                str(member.id),
-                {"at": int(time.time()), "escalated_at": None, "mod_id": None, "followed_up": False},
-            )
-        )
+
+        content = (message.content or "").strip()
+        if message.attachments:
+            content += ("\n" if content else "") + "📎 " + ", ".join(a.filename for a in message.attachments)
+        key = str(member.id)
+
+        def mut(d: dict) -> None:
+            waiting = d.setdefault(VERIFY_WAITING, {})
+            if key not in waiting:  # keep the original "waiting since" time
+                waiting[key] = {"at": int(time.time()), "escalated_at": None, "mod_id": None, "followed_up": False}
+            if content:
+                msgs = d.setdefault(VERIFY_MESSAGES, {}).setdefault(key, [])
+                msgs.append({"c": content[:1000], "t": int(time.time())})
+                del msgs[:-5]  # keep the latest 5
+
+        await self.store.update(mut)
 
     @tasks.loop(minutes=30)
     async def verify_pending_loop(self) -> None:
@@ -814,7 +849,7 @@ class Onboarding(commands.Cog, MemberActions):
     async def _followup_mod(self, guild: discord.Guild, member: discord.Member, mod_id: int) -> None:
         """Nudge the moderator who was pinged but hasn't acted."""
         content = f"are you still there? >:c — **{member}** is **still** waiting to be verified."
-        messages = await self._recent_user_messages(guild, member)
+        messages = await self._collect_messages(guild, member)
         embed = self._escalation_embed(guild, member, "pending", messages)
         mod = guild.get_member(mod_id) if mod_id else None
         if mod is not None:
