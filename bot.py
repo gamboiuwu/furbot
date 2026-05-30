@@ -98,8 +98,11 @@ class FurBot(commands.Bot):
         # restart. DynamicItems are registered by class; the batch view by
         # instance (its custom_ids are fixed).
         from cogs.onboarding import BatchConfirmView, ModActionButton, PhoneReviewButton, WaitingButton
-        from cogs.review import ReviewButton, ReviewConsentButton
-        self.add_dynamic_items(WaitingButton, PhoneReviewButton, ModActionButton, ReviewButton, ReviewConsentButton)
+        from cogs.review import ReviewButton, ReviewConsentButton, ReviewOptOutButton
+        self.add_dynamic_items(
+            WaitingButton, PhoneReviewButton, ModActionButton,
+            ReviewButton, ReviewConsentButton, ReviewOptOutButton,
+        )
         self.add_view(BatchConfirmView(self))
 
         # Register slash commands. If a guild ID is configured we sync to

@@ -27,6 +27,7 @@ log = logging.getLogger("furbot.review")
 REVIEW_SENT = "review_sent"        # {user_id_str: epoch_sent}
 REVIEW_STATE = "review_state"      # {"seeded": bool}
 REVIEW_RECHECK = "review_recheck"  # {user_id_str: due_epoch} (opted-in follow-ups)
+REVIEW_OPTOUT = "review_optout"    # [user_id_str, ...] (never contact again)
 
 QUESTIONS = [
     "How has your experience been so far?",
@@ -129,6 +130,36 @@ class ReviewConsentButton(
         await cog.handle_consent(interaction, self.choice, self.user_id)
 
 
+class ReviewOptOutButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"review:optout:v1:(?P<guild_id>\d+):(?P<user_id>\d+)",
+):
+    def __init__(self, guild_id: int, user_id: int) -> None:
+        self.guild_id = guild_id
+        self.user_id = user_id
+        super().__init__(
+            discord.ui.Button(
+                label="Don't contact me again",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"review:optout:v1:{guild_id}:{user_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["guild_id"]), int(match["user_id"]))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
+        cog: "Review | None" = interaction.client.get_cog("Review")
+        if cog is None:
+            await interaction.response.send_message("This isn't available right now.", ephemeral=True)
+            return
+        await cog.handle_optout(interaction, self.user_id)
+
+
 def build_consent_view(guild_id: int, user_id: int) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     view.add_item(ReviewConsentButton("yes", guild_id, user_id))
@@ -166,11 +197,12 @@ class Review(commands.Cog):
         days = self._s("review_after_days")
         now = discord.utils.utcnow()
         sent = self.store.get(REVIEW_SENT, {})
+        optout = self.store.get(REVIEW_OPTOUT, [])
         out = []
         for m in guild.members:
             if m.bot or role not in m.roles or m.joined_at is None:
                 continue
-            if str(m.id) in sent:
+            if str(m.id) in sent or str(m.id) in optout:
                 continue
             if (now - m.joined_at).days >= days:
                 out.append(m)
@@ -229,6 +261,18 @@ class Review(commands.Cog):
             msg = "Understood. We won't reach out again. Thanks for your time."
         await interaction.response.edit_message(content=msg, view=None)
 
+    async def handle_optout(self, interaction: discord.Interaction, user_id: int) -> None:
+        def mut(d: dict) -> None:
+            lst = d.setdefault(REVIEW_OPTOUT, [])
+            if str(user_id) not in lst:
+                lst.append(str(user_id))
+            d.get(REVIEW_RECHECK, {}).pop(str(user_id), None)
+
+        await self.store.update(mut)
+        await interaction.response.edit_message(
+            content="Understood. You won't be contacted again. Thank you for your time.", view=None
+        )
+
     # ---- DM sending ------------------------------------------------------
 
     async def _send_review(self, guild: discord.Guild, member: discord.Member) -> None:
@@ -247,6 +291,7 @@ class Review(commands.Cog):
         view = discord.ui.View(timeout=None)
         view.add_item(ReviewButton("named", guild.id, member.id))
         view.add_item(ReviewButton("anon", guild.id, member.id))
+        view.add_item(ReviewOptOutButton(guild.id, member.id))
         try:
             await member.send(text, view=view)
         except discord.HTTPException:
@@ -294,7 +339,8 @@ class Review(commands.Cog):
 
         # Opted-in follow-ups that have come due — send the same form again.
         recheck = self.store.get(REVIEW_RECHECK, {})
-        due = [uid for uid, t in recheck.items() if t <= time.time()][:batch]
+        optout = self.store.get(REVIEW_OPTOUT, [])
+        due = [uid for uid, t in recheck.items() if t <= time.time() and uid not in optout][:batch]
         for uid in due:
             member = guild.get_member(int(uid))
             if member is not None:
