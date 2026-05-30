@@ -67,6 +67,9 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "task_nudge_repeat_days":    (int,   7,     "Days between repeat nudges after the first."),
     "dm_relay_enabled":          (bool,  True,  "Greet people who DM the bot and log their messages to the log channel."),
     "member_log_enabled":        (bool,  True,  "Log joins, leaves, kicks, bans, and unbans to the log channel."),
+    "fart_enabled":              (bool,  True,  "Occasionally post 'fart' in the welcome channel for fun."),
+    "fart_per_week":             (int,   5,     "Roughly how many times a week the bot farts."),
+    "fart_channel_id":           (int,   0,     "Channel for farts (0 = use the welcome channel)."),
 }
 
 
