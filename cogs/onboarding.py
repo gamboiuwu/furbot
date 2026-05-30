@@ -34,6 +34,7 @@ SUMMARY_MSG = "onboarding.summary_msg"  # {"channel_id": int, "message_id": int}
 # Members who posted in the verify channel and are awaiting a manual push.
 VERIFY_WAITING = "verify_waiting"     # {user_id: {at, escalated_at, mod_id, followed_up}}
 VERIFY_MESSAGES = "verify_messages"   # {user_id: [{"c": content, "t": epoch}, ...]} (cap 5)
+BLOCKED_CALLOUT = "blocked_callout"   # {mod_id: last_called_epoch} (cooldown for the call-out)
 
 STAFF_ONLY = "🔒 This action is for staff only."
 
@@ -595,9 +596,38 @@ class Onboarding(commands.Cog, MemberActions):
             try:
                 await mod.send(embed=embed, view=view)
                 return mod
+            except discord.Forbidden:
+                await self._call_out_blocked(guild, mod)  # they blocked/closed DMs
+                continue
             except discord.HTTPException:
                 continue
         return None
+
+    async def _call_out_blocked(self, guild: discord.Guild, mod: discord.Member) -> None:
+        """If a staff member has the bot blocked/DMs closed, humorously call them
+        out in the welcome channel (rate-limited to once per 24h per person)."""
+        if not self._s("blocked_callout_enabled"):
+            return
+        channel = self.bot.get_channel(self._s("welcome_channel_id")) if self._s("welcome_channel_id") else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        last = self.store.get(BLOCKED_CALLOUT, {})
+        if time.time() - last.get(str(mod.id), 0) < 86400:
+            return
+        text = (
+            f"📢 {mod.mention} has their DMs closed (or *blocked me* 😤), so I can't send them "
+            "verification pings. Everyone point and laugh 👉😹"
+        )
+        image = self._s("blocked_image_url")
+        if image:
+            text += f"\n{image}"
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions(users=True))
+            await self.store.update(
+                lambda d: d.setdefault(BLOCKED_CALLOUT, {}).__setitem__(str(mod.id), int(time.time()))
+            )
+        except discord.HTTPException:
+            log.exception("Failed to post blocked-staff call-out")
 
     async def _escalate_to_log(
         self, guild: discord.Guild, member: discord.Member, reason: str = "waiting"
@@ -856,6 +886,8 @@ class Onboarding(commands.Cog, MemberActions):
             try:
                 await mod.send(content=content, embed=embed, view=build_mod_view(guild.id, member.id))
                 return
+            except discord.Forbidden:
+                await self._call_out_blocked(guild, mod)  # they blocked/closed DMs
             except discord.HTTPException:
                 pass
         # Original mod unreachable — try a fresh one, else the log channel.

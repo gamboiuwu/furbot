@@ -112,6 +112,8 @@ class Config:
     verify_escalate_hours: int | None
     verify_followup_hours: int | None
     warn_grace_hours: int | None
+    blocked_callout_enabled: bool | None
+    blocked_image_url: str | None
     review_enabled: bool | None
     feedback_channel_id: int | None
     review_after_days: int | None
@@ -184,6 +186,8 @@ class Config:
             verify_escalate_hours=_get_int("VERIFY_ESCALATE_HOURS"),
             verify_followup_hours=_get_int("VERIFY_FOLLOWUP_HOURS"),
             warn_grace_hours=_get_int("WARN_GRACE_HOURS"),
+            blocked_callout_enabled=_get_bool("BLOCKED_CALLOUT_ENABLED"),
+            blocked_image_url=os.getenv("BLOCKED_IMAGE_URL", "").strip() or None,
             review_enabled=_get_bool("REVIEW_ENABLED"),
             feedback_channel_id=_get_int("FEEDBACK_CHANNEL_ID"),
             review_after_days=_get_int("REVIEW_AFTER_DAYS"),

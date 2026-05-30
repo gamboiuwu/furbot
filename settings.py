@@ -44,6 +44,8 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "verify_escalate_hours":     (int,   48,    "Hours after a verify-channel message before pinging staff to push them."),
     "verify_followup_hours":     (int,   24,    "Hours after staff is pinged (no action) before the 'are you still there?' nudge."),
     "warn_grace_hours":          (int,   24,    "Hours after a 'needs more info' warning before the member becomes kick-eligible."),
+    "blocked_callout_enabled":   (bool,  True,  "Humorously call out staff in the welcome channel if they've blocked/closed DMs to the bot."),
+    "blocked_image_url":         (str,   "",    "Image/GIF URL used for the 'point and laugh' staff call-out."),
     "review_enabled":            (bool,  False, "Master switch for the one-month member check-in survey."),
     "feedback_channel_id":       (int,   1510064548084715520, "Channel (in the staff server) where check-in feedback is posted."),
     "review_after_days":         (int,   30,    "Days after joining before a member gets the check-in DM."),
