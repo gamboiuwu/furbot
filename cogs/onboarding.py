@@ -718,9 +718,12 @@ class Onboarding(commands.Cog, MemberActions):
 
     def _warn_more_info(self, guild: discord.Guild) -> str:
         return (
-            f"⚠️ Hi! A moderator looked at your verification in **{guild.name}** and needs a bit "
-            f"**more information** before approving you. Please go back to {self._verification_channel_mention()} "
-            "and add more detail (follow the channel's instructions). Reply here if you're unsure what's needed."
+            f"Hey there! Thanks for joining **{guild.name}** — we're really glad you're here. Before we "
+            "can give you full access, we'd love to get to know you a little better. Whenever you get a "
+            f"chance, head back to {self._verification_channel_mention()} and tell us a bit about yourself: "
+            "who you are, how you found us, and what you're hoping to do or find in the community. Just a "
+            "few honest sentences is perfect — it helps us know you're a real person who wants to be part "
+            "of the group. Looking forward to having you with us!"
         )
 
     # ---- background sweep ------------------------------------------------

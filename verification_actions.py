@@ -210,11 +210,15 @@ class MemberActions:
     async def _warn(
         self, member: discord.Member, *, by: discord.Member, message: str | None = None
     ) -> None:
+        cid = getattr(self.config, "verification_channel_id", None)
+        chan = f"<#{cid}>" if cid else "the verification channel"
         content = message or (
-            f"Hi! A staff member reviewed your verification in **{member.guild.name}** "
-            "and it looks like something wasn't quite right with how you verified. "
-            "Please re-read the verification instructions and try again. If you're "
-            "unsure what needs fixing, reply to the staff team and we'll help you out. 🐾"
+            f"Hey there! Thanks for joining **{member.guild.name}** — we're really glad you're here. "
+            "Before we can give you full access, we'd love to get to know you a little. Whenever you "
+            f"get a chance, pop back into {chan} and tell us a bit about yourself: who you are, how you "
+            "found us, and what you're hoping to do or find in the community. Just a few honest "
+            "sentences is perfect — it helps us know you're a real person who wants to be part of the "
+            "group. Thanks, and welcome!"
         )
         await self._try_dm(member, content)
         log.info("Warned %s (by %s)", member, by)
