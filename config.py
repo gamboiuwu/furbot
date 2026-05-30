@@ -121,6 +121,7 @@ class Config:
     task_nudge_first_days: int | None
     task_nudge_repeat_days: int | None
     dm_relay_enabled: bool | None
+    member_log_enabled: bool | None
     review_enabled: bool | None
     feedback_channel_id: int | None
     review_after_days: int | None
@@ -208,4 +209,5 @@ class Config:
             task_nudge_first_days=_get_int("TASK_NUDGE_FIRST_DAYS"),
             task_nudge_repeat_days=_get_int("TASK_NUDGE_REPEAT_DAYS"),
             dm_relay_enabled=_get_bool("DM_RELAY_ENABLED"),
+            member_log_enabled=_get_bool("MEMBER_LOG_ENABLED"),
         )

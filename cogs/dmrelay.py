@@ -1,19 +1,17 @@
 """DM concierge.
 
 When someone messages the bot in DMs:
-  * a plain greeting ("hi", "hello", …) -> the bot says hi and asks if they
+  * every message is logged to the staff log channel;
+  * a plain greeting ("hi", "hello", …) gets a friendly reply asking if they
     have any questions or comments;
-  * anything more substantial -> the bot forwards it to a random moderator's
-    DMs and thanks the person.
+  * anything else gets a thank-you letting them know staff will see it.
 
-Staff DMs aren't relayed (avoids loops), and forwarding is rate-limited per
-person so it can't be used to spam moderators.
+Nothing is posted publicly — DMs are only mirrored to the log channel.
 """
 
 from __future__ import annotations
 
 import logging
-import random
 import time
 
 import discord
@@ -24,10 +22,9 @@ from verification_actions import MemberActions
 
 log = logging.getLogger("furbot.dmrelay")
 
-DM_RELAY = "dm_relay"   # {user_id: {"greet": epoch, "fwd": [epochs]}}
+DM_RELAY = "dm_relay"   # {user_id: {"greet": epoch, "ack": epoch}}
 GREET_COOLDOWN = 300    # seconds between greetings to the same person
-FWD_WINDOW = 3600       # rate-limit window
-FWD_MAX = 5             # max forwards per window per person
+ACK_COOLDOWN = 60       # seconds between thank-yous to the same person
 
 GREETINGS = {
     "hi", "hello", "hey", "heya", "hiya", "yo", "sup", "howdy", "hewwo",
@@ -41,12 +38,6 @@ class DMRelay(commands.Cog, MemberActions):
         self.config = bot.config
         self.store = bot.store
         self.settings = bot.settings
-
-    def _main_guild(self) -> discord.Guild | None:
-        gid = self.config.guild_id
-        if gid:
-            return self.bot.get_guild(gid)
-        return self.bot.guilds[0] if self.bot.guilds else None
 
     @staticmethod
     def _is_greeting(content: str) -> bool:
@@ -68,98 +59,35 @@ class DMRelay(commands.Cog, MemberActions):
         if not content and not message.attachments:
             return
 
-        guild = self._main_guild()
-        # Don't relay staff DMs (prevents mod->mod loops).
-        author_member = guild.get_member(message.author.id) if guild else None
-        if author_member is not None and self._is_staff(author_member):
-            return
+        # Mirror every DM to the staff log channel (never posted publicly).
+        await self._log_dm(message)
 
         if content and self._is_greeting(content):
-            await self._greet(message)
+            await self._reply(message, "greet", GREET_COOLDOWN, messages.DM_GREET)
         else:
-            await self._forward(message, guild)
+            await self._reply(message, "ack", ACK_COOLDOWN, messages.DM_RELAY_ACK)
 
-    async def _greet(self, message: discord.Message) -> None:
-        state = self.store.get(DM_RELAY, {})
-        last = state.get(str(message.author.id), {}).get("greet", 0)
-        if time.time() - last < GREET_COOLDOWN:
-            return  # don't spam greetings
-        try:
-            await message.channel.send(messages.pick(messages.DM_GREET))
-        except discord.HTTPException:
-            return
-        await self.store.update(
-            lambda d: d.setdefault(DM_RELAY, {}).setdefault(str(message.author.id), {}).__setitem__("greet", int(time.time()))
-        )
-
-    async def _forward(self, message: discord.Message, guild: discord.Guild | None) -> None:
-        if guild is None:
-            return
-        key = str(message.author.id)
-        now = time.time()
-        recent = [t for t in self.store.get(DM_RELAY, {}).get(key, {}).get("fwd", []) if now - t < FWD_WINDOW]
-        if len(recent) >= FWD_MAX:
-            try:
-                await message.channel.send(
-                    "I've already passed several of your messages along — a moderator will get back to you soon. "
-                    "Thanks for your patience! ^_^"
-                )
-            except discord.HTTPException:
-                pass
-            return
-
-        delivered = await self._dm_random_staff(guild, message)
-        if not delivered:
-            delivered = await self._relay_to_log(message)
-        if not delivered:
-            return
-
-        recent.append(int(now))
-
-        def mut(d: dict) -> None:
-            entry = d.setdefault(DM_RELAY, {}).setdefault(key, {})
-            entry["fwd"] = recent
-
-        await self.store.update(mut)
-        try:
-            await message.channel.send(messages.pick(messages.DM_RELAY_ACK))
-        except discord.HTTPException:
-            pass
-
-    def _relay_text(self, message: discord.Message) -> str:
+    async def _log_dm(self, message: discord.Message) -> None:
         body = (message.content or "").strip()
         if message.attachments:
             body += ("\n" if body else "") + "\n".join(a.url for a in message.attachments)
-        return (
-            f"📨 **Message for staff** — {message.author.mention} ({message.author} · `{message.author.id}`) "
-            f"sent me this in DMs:\n>>> {body[:1700]}\n\nFeel free to reach out to them directly."
+        await self._log_action(
+            f"📨 **DM to bot** from {message.author.mention} "
+            f"({message.author} · `{message.author.id}`):\n>>> {body[:1700]}"
         )
 
-    async def _dm_random_staff(self, guild: discord.Guild, message: discord.Message) -> bool:
-        role = guild.get_role(self.config.staff_role_id) if self.config.staff_role_id else None
-        if role is None:
-            return False
-        candidates = [m for m in role.members if not m.bot]
-        random.shuffle(candidates)
-        text = self._relay_text(message)
-        for mod in candidates[:5]:
-            try:
-                await mod.send(text, allowed_mentions=discord.AllowedMentions.none())
-                return True
-            except discord.HTTPException:
-                continue
-        return False
-
-    async def _relay_to_log(self, message: discord.Message) -> bool:
-        cid = self.config.log_channel_id
-        channel = self.bot.get_channel(cid) if cid else None
-        if not isinstance(channel, discord.TextChannel):
-            return False
+    async def _reply(self, message: discord.Message, kind: str, cooldown: int, pool: list[str]) -> None:
+        key = str(message.author.id)
+        last = self.store.get(DM_RELAY, {}).get(key, {}).get(kind, 0)
+        if time.time() - last < cooldown:
+            return
         try:
-            await channel.send(self._relay_text(message), allowed_mentions=discord.AllowedMentions.none())
-            return True
+            await message.channel.send(messages.pick(pool))
         except discord.HTTPException:
-            return False
+            return
+        await self.store.update(
+            lambda d: d.setdefault(DM_RELAY, {}).setdefault(key, {}).__setitem__(kind, int(time.time()))
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -43,6 +43,7 @@ INITIAL_COGS = (
     "cogs.review",
     "cogs.taskboard",
     "cogs.dmrelay",
+    "cogs.serverlog",
 )
 
 
