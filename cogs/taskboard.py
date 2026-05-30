@@ -79,6 +79,26 @@ class TaskBoard(commands.Cog, MemberActions):
             )
         )
 
+    def _owner_id(self, thread: discord.Thread) -> int | None:
+        """Stored owner, defaulting to the thread's creator."""
+        return self.store.get(TASK_OWNERS, {}).get(str(thread.id)) or thread.owner_id
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread) -> None:
+        """New task thread -> auto-claim it for whoever created it."""
+        if not self._s("task_enabled") or thread.parent_id != self._s("task_forum_id"):
+            return
+        if thread.owner_id:
+            await self.store.update(
+                lambda d: (
+                    d.setdefault(TASK_OWNERS, {}).__setitem__(str(thread.id), thread.owner_id),
+                    d.setdefault(TASK_STATE, {}).__setitem__(str(thread.id), {"last_nudge": 0}),
+                )
+            )
+        forum = self._forum()
+        if forum is not None:
+            await self._refresh_board(forum)
+
     # ---- completion ------------------------------------------------------
 
     @commands.Cog.listener()
@@ -139,13 +159,17 @@ class TaskBoard(commands.Cog, MemberActions):
         forum = self._forum()
         if forum is None:
             return
-        owners = self.store.get(TASK_OWNERS, {})
+        owners = dict(self.store.get(TASK_OWNERS, {}))
         state = dict(self.store.get(TASK_STATE, {}))
         now = time.time()
         first = self._s("task_nudge_first_days") * 86400
         repeat = self._s("task_nudge_repeat_days") * 86400
-        changed = False
+        changed = owners_changed = False
         for thread in self._open_tasks(forum):
+            # Backfill the creator as owner for any task without one.
+            if str(thread.id) not in owners and thread.owner_id:
+                owners[str(thread.id)] = thread.owner_id
+                owners_changed = True
             inactive = now - self._last_activity(thread)
             if inactive < first:
                 continue
@@ -154,9 +178,11 @@ class TaskBoard(commands.Cog, MemberActions):
             due = (now - last_nudge) >= repeat if last_nudge else True
             if not due:
                 continue
-            await self._nudge(thread, owners.get(str(thread.id)), inactive)
+            await self._nudge(thread, owners.get(str(thread.id)) or thread.owner_id, inactive)
             state[str(thread.id)] = {"last_nudge": int(now)}
             changed = True
+        if owners_changed:
+            await self.store.set(TASK_OWNERS, owners)
         if changed:
             await self.store.set(TASK_STATE, state)
         await self._refresh_board(forum)
@@ -183,11 +209,10 @@ class TaskBoard(commands.Cog, MemberActions):
             log.exception("Failed to nudge task thread %s", thread.id)
 
     async def _refresh_board(self, forum: discord.ForumChannel) -> None:
-        owners = self.store.get(TASK_OWNERS, {})
         now = time.time()
         lines = []
         for thread in sorted(self._open_tasks(forum), key=lambda t: t.created_at):
-            oid = owners.get(str(thread.id))
+            oid = self._owner_id(thread)
             owner = f"<@{oid}>" if oid else "_unclaimed_"
             age = max(0, int((now - thread.created_at.timestamp()) / 86400))
             idle = max(0, int((now - self._last_activity(thread)) / 86400))
@@ -252,8 +277,8 @@ class TaskBoard(commands.Cog, MemberActions):
         if not self._in_task_thread(interaction):
             await interaction.response.send_message("Run this inside a task thread in the forum.", ephemeral=True)
             return
-        oid = self.store.get(TASK_OWNERS, {}).get(str(interaction.channel.id))
-        msg = f"Owner: <@{oid}>" if oid else "This task is unclaimed. Use `/task claim`."
+        oid = self._owner_id(interaction.channel)
+        msg = f"Owner: <@{oid}>" if oid else "This task has no owner. Use `/task claim` or `/task assign`."
         await interaction.response.send_message(msg, ephemeral=True)
 
     @group.command(name="board", description="Refresh the pinned task board now.")
