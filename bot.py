@@ -45,6 +45,7 @@ INITIAL_COGS = (
     "cogs.dmrelay",
     "cogs.serverlog",
     "cogs.fart",
+    "cogs.hipileon",
 )
 
 

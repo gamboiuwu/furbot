@@ -126,6 +126,8 @@ class Config:
     fart_enabled: bool | None
     fart_per_week: int | None
     fart_channel_id: int | None
+    hi_pileon_enabled: bool | None
+    hi_pileon_count: int | None
     review_enabled: bool | None
     feedback_channel_id: int | None
     review_after_days: int | None
@@ -218,4 +220,6 @@ class Config:
             fart_enabled=_get_bool("FART_ENABLED"),
             fart_per_week=_get_int("FART_PER_WEEK"),
             fart_channel_id=_get_int("FART_CHANNEL_ID"),
+            hi_pileon_enabled=_get_bool("HI_PILEON_ENABLED"),
+            hi_pileon_count=_get_int("HI_PILEON_COUNT"),
         )
