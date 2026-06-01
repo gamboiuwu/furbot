@@ -44,6 +44,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "verify_escalate_hours":     (int,   48,    "Hours after a verify-channel message before pinging staff to push them."),
     "verify_followup_hours":     (int,   24,    "Hours after staff is pinged (no action) before the 'are you still there?' nudge."),
     "warn_grace_hours":          (int,   24,    "Hours after a 'needs more info' warning before the member becomes kick-eligible."),
+    "warn_kick_enabled":         (bool,  True,  "Automatically kick warned members once their grace period expires (independent of auto-onboarding)."),
     "blocked_callout_enabled":   (bool,  True,  "Humorously call out staff in the welcome channel if they've blocked/closed DMs to the bot."),
     "blocked_image_file":        (str,   "",    "Filename of the call-out image on the WebDAV drive (Bot Data folder). Preferred over the URL."),
     "blocked_image_url":         (str,   "",    "Image/GIF URL used for the 'point and laugh' staff call-out (fallback if no WebDAV file)."),

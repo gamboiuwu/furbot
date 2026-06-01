@@ -200,11 +200,13 @@ class Onboarding(commands.Cog, MemberActions):
         self.sweep.start()
         self.auto_loop.start()
         self.verify_pending_loop.start()
+        self.warn_kick_loop.start()
 
     async def cog_unload(self) -> None:
         self.sweep.cancel()
         self.auto_loop.cancel()
         self.verify_pending_loop.cancel()
+        self.warn_kick_loop.cancel()
 
     # ---- small helpers ---------------------------------------------------
 
@@ -824,6 +826,54 @@ class Onboarding(commands.Cog, MemberActions):
 
     @auto_loop.before_loop
     async def _before_auto(self) -> None:
+        await self.bot.wait_until_ready()
+
+    # ---- warn -> kick (independent of auto mode) ------------------------
+
+    @tasks.loop(minutes=15)
+    async def warn_kick_loop(self) -> None:
+        """Kick members whose 'needs more info' grace period has expired. Runs
+        regardless of the auto-onboarding switch, since a warn is a deliberate
+        staff action that should be enforced on its own."""
+        if not self._s("warn_kick_enabled"):
+            return
+        guild = self._guild()
+        if guild is None:
+            return
+        deadlines = dict(self.store.get(WARN_DEADLINE, {}))
+        if not deadlines:
+            return
+        if not guild.chunked:
+            try:
+                await guild.chunk()
+            except (discord.HTTPException, discord.ClientException):
+                return
+        role = self._floofs_role(guild)
+        now = time.time()
+        delay = self._s("onboarding_action_delay") or 1.5
+        changed = False
+        for uid, deadline in list(deadlines.items()):
+            member = guild.get_member(int(uid))
+            # Gone, verified, or a stale entry from before a rejoin -> drop it.
+            if member is None or (role is not None and role in member.roles) or \
+                    (member.joined_at and deadline < member.joined_at.timestamp()):
+                del deadlines[uid]
+                changed = True
+                continue
+            if now >= deadline:
+                ok = await self._kick(
+                    member, by=guild.me, reason="Did not redo verification in time",
+                    dm_text=self._removal_dm(guild),
+                )
+                if ok:
+                    del deadlines[uid]
+                    changed = True
+                    await asyncio.sleep(delay)
+        if changed:
+            await self.store.set(WARN_DEADLINE, deadlines)
+
+    @warn_kick_loop.before_loop
+    async def _before_warn_kick(self) -> None:
         await self.bot.wait_until_ready()
 
     # ---- "answered but still waiting" escalation ------------------------

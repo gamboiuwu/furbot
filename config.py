@@ -112,6 +112,7 @@ class Config:
     verify_escalate_hours: int | None
     verify_followup_hours: int | None
     warn_grace_hours: int | None
+    warn_kick_enabled: bool | None
     blocked_callout_enabled: bool | None
     blocked_image_file: str | None
     blocked_image_url: str | None
@@ -197,6 +198,7 @@ class Config:
             verify_escalate_hours=_get_int("VERIFY_ESCALATE_HOURS"),
             verify_followup_hours=_get_int("VERIFY_FOLLOWUP_HOURS"),
             warn_grace_hours=_get_int("WARN_GRACE_HOURS"),
+            warn_kick_enabled=_get_bool("WARN_KICK_ENABLED"),
             blocked_callout_enabled=_get_bool("BLOCKED_CALLOUT_ENABLED"),
             blocked_image_file=os.getenv("BLOCKED_IMAGE_FILE", "").strip() or None,
             blocked_image_url=os.getenv("BLOCKED_IMAGE_URL", "").strip() or None,
