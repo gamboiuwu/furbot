@@ -73,6 +73,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "fart_channel_id":           (int,   0,     "Channel for farts (0 = use the welcome channel)."),
     "hi_pileon_enabled":         (bool,  True,  "When several people say 'hi' in a row, the bot joins in and says hi."),
     "hi_pileon_count":           (int,   5,     "How many people must say 'hi' in a row before the bot joins in."),
+    "slur_watch_enabled":        (bool,  True,  "Respond 'THIS BETTER BE SATIRICAL' when someone uses the f-slur."),
 }
 
 
