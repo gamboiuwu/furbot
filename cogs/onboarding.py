@@ -694,8 +694,14 @@ class Onboarding(commands.Cog, MemberActions):
             await interaction.response.send_message("That server is unavailable.", ephemeral=True)
             return
 
-        # Staff guard: re-fetch the acting user as a Member (DMs give a User).
+        # Staff guard: re-fetch the acting user as a Member (DMs give a User,
+        # and on mobile / uncached the member may not be in cache).
         actor = guild.get_member(interaction.user.id)
+        if actor is None:
+            try:
+                actor = await guild.fetch_member(interaction.user.id)
+            except discord.HTTPException:
+                actor = None
         if actor is None or not self._is_staff(actor):
             await interaction.response.send_message(STAFF_ONLY, ephemeral=True)
             return

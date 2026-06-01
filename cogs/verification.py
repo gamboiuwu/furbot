@@ -29,6 +29,15 @@ log = logging.getLogger("furbot.verification")
 # Key in the shared store for the temp-ban cooldown list.
 PENDING_UNBANS = "pending_unbans"  # {"guild_id:user_id": unban_at_epoch}
 
+# Keyword fallback (for when buttons/reactions don't cooperate, e.g. mobile).
+# A staff member replies to (or @mentions) the person with one of these words.
+KEYWORD_ACTIONS = {
+    "verify": "approve", "verified": "approve", "approve": "approve",
+    "approved": "approve", "accept": "approve", "accepted": "approve",
+    "reject": "reject", "rejected": "reject", "deny": "reject", "denied": "reject",
+    "warn": "warn", "redo": "warn", "moreinfo": "warn", "more info": "warn",
+}
+
 
 class Verification(commands.Cog, MemberActions):
     def __init__(self, bot: commands.Bot) -> None:
@@ -164,6 +173,61 @@ class Verification(commands.Cog, MemberActions):
             await self._reject(target, by=reactor)
         elif action == "warn":
             await self._warn(target, by=reactor)
+
+    # ---- keyword fallback (mobile-friendly) -----------------------------
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Staff can reply to (or @mention) a member with 'verify' / 'warn' /
+        'reject' in the verification channel — a fallback for when the buttons
+        or reactions don't cooperate (e.g. on mobile)."""
+        if message.author.bot or message.guild is None:
+            return
+        if message.channel.id != self.config.verification_channel_id:
+            return
+        actor = message.author
+        if not isinstance(actor, discord.Member) or not self._is_staff(actor):
+            return
+        action = KEYWORD_ACTIONS.get((message.content or "").strip().lower())
+        if action is None:
+            return
+
+        # Figure out who they mean: the replied-to message's author, else a mention.
+        target = None
+        ref = message.reference
+        if ref is not None and ref.message_id:
+            try:
+                replied = await message.channel.fetch_message(ref.message_id)
+                target = replied.author
+            except discord.HTTPException:
+                target = None
+        if target is None and message.mentions:
+            target = message.mentions[0]
+        if not isinstance(target, discord.Member) or target.bot:
+            try:
+                await message.reply(
+                    "Reply to the member's message (or @mention them) with `verify`, `warn`, or `reject`.",
+                    mention_author=False,
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        floofs = message.guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
+        if action in ("reject", "warn") and floofs is not None and floofs in target.roles:
+            await message.reply(f"**{target.display_name}** is already verified — ignoring.", mention_author=False)
+            return
+
+        if action == "approve":
+            await self._grant_floofs(target, by=actor, reason="keyword approval")
+        elif action == "reject":
+            await self._reject(target, by=actor)
+        elif action == "warn":
+            await self._warn(target, by=actor)
+        try:
+            await message.add_reaction("✅")  # confirm it worked
+        except discord.HTTPException:
+            pass
 
     # ---- background: expire cooldowns -----------------------------------
 
