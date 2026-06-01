@@ -342,13 +342,15 @@ class Onboarding(commands.Cog, MemberActions):
         e.set_footer(text=f"Up to {self._s('onboarding_batch_cap')} per click · staff only")
         return e
 
-    async def _post_or_update_summary(self, guild: discord.Guild | None, note: str | None = None) -> None:
+    async def _post_or_update_summary(
+        self, guild: discord.Guild | None, note: str | None = None
+    ) -> discord.Message | None:
         if guild is None:
-            return
+            return None
         log_id = self.config.log_channel_id
         channel = self.bot.get_channel(log_id) if log_id else None
         if not isinstance(channel, discord.TextChannel):
-            return
+            return None
         due_remind, due_kick = self._compute(guild)
         saved = self.store.get(SUMMARY_MSG, {})
 
@@ -361,15 +363,23 @@ class Onboarding(commands.Cog, MemberActions):
 
         # Nothing to show and no message to update -> stay quiet.
         if not due_remind and not due_kick and existing is None and note is None:
-            return
+            return None
 
         embed = self._summary_embed(guild, due_remind, due_kick, note)
         view = BatchConfirmView(self.bot)
-        if existing is not None:
-            await existing.edit(embed=embed, view=view)
-        else:
+        try:
+            if existing is not None:
+                await existing.edit(embed=embed, view=view)
+                return existing
             msg = await channel.send(embed=embed, view=view)
             await self.store.set(SUMMARY_MSG, {"channel_id": channel.id, "message_id": msg.id})
+            return msg
+        except discord.Forbidden:
+            log.warning("Missing permission to post the onboarding summary in #%s", channel)
+            return None
+        except discord.HTTPException:
+            log.exception("Failed to post onboarding summary")
+            return None
 
     # ---- batch execution -------------------------------------------------
 
@@ -1008,8 +1018,17 @@ class Onboarding(commands.Cog, MemberActions):
             except (discord.HTTPException, discord.ClientException):
                 pass
         await self._prune(guild)
-        await self._post_or_update_summary(guild, note=f"Triggered by {interaction.user.display_name}")
-        await interaction.followup.send("Posted the onboarding summary in the log channel.", ephemeral=True)
+        msg = await self._post_or_update_summary(guild, note=f"Triggered by {interaction.user.display_name}")
+        if msg is not None:
+            await interaction.followup.send(f"📋 Onboarding summary posted/updated: {msg.jump_url}", ephemeral=True)
+        else:
+            log_id = self.config.log_channel_id
+            where = f"<#{log_id}>" if log_id else "not set (`log_channel_id`)"
+            await interaction.followup.send(
+                f"I couldn't post the summary. Make sure `log_channel_id` ({where}) is a channel I can "
+                "**View** and **Send Messages / Embed Links** in.",
+                ephemeral=True,
+            )
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
