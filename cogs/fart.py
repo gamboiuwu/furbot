@@ -16,8 +16,6 @@ log = logging.getLogger("furbot.fart")
 FART_NEXT = "fart_next"  # epoch of the next scheduled fart
 FIRST_DELAY = 120        # first fart ~2 minutes after startup
 
-FARTS = ["fart", "fart 💨", "*fart*", "fart.", "fart~", "FART", "...fart", "fart 😳"]
-
 
 class Fart(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -65,7 +63,7 @@ class Fart(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
         try:
-            await channel.send(random.choice(FARTS), allowed_mentions=discord.AllowedMentions.none())
+            await channel.send("fart", allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             log.exception("Failed to fart")
 
