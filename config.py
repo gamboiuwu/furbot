@@ -129,6 +129,8 @@ class Config:
     hi_pileon_enabled: bool | None
     hi_pileon_count: int | None
     slur_watch_enabled: bool | None
+    argument_enabled: bool | None
+    argument_channel_id: int | None
     review_enabled: bool | None
     feedback_channel_id: int | None
     review_after_days: int | None
@@ -224,4 +226,6 @@ class Config:
             hi_pileon_enabled=_get_bool("HI_PILEON_ENABLED"),
             hi_pileon_count=_get_int("HI_PILEON_COUNT"),
             slur_watch_enabled=_get_bool("SLUR_WATCH_ENABLED"),
+            argument_enabled=_get_bool("ARGUMENT_ENABLED"),
+            argument_channel_id=_get_int("ARGUMENT_CHANNEL_ID"),
         )

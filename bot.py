@@ -47,6 +47,7 @@ INITIAL_COGS = (
     "cogs.fart",
     "cogs.hipileon",
     "cogs.slurwatch",
+    "cogs.argument",
 )
 
 

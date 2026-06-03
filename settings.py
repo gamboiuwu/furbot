@@ -74,6 +74,8 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "hi_pileon_enabled":         (bool,  True,  "When several people say 'hi' in a row, the bot joins in and says hi."),
     "hi_pileon_count":           (int,   5,     "How many people must say 'hi' in a row before the bot joins in."),
     "slur_watch_enabled":        (bool,  True,  "Respond 'THIS BETTER BE SATIRICAL' when someone uses the f-slur."),
+    "argument_enabled":          (bool,  True,  "Once a week the bot has a self-argument in the welcome/general channel."),
+    "argument_channel_id":       (int,   0,     "Channel for the weekly self-argument (0 = use the welcome channel)."),
 }
 
 
