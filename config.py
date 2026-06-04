@@ -135,6 +135,8 @@ class Config:
     welcome_points_channel_id: int | None
     welcome_window_minutes: int | None
     welcome_shoutout_every: int | None
+    # Indico (events.nyfurs.org) — token is a secret, env-only (never stored).
+    indico_api_token: str | None
     hi_pileon_enabled: bool | None
     hi_pileon_count: int | None
     slur_watch_enabled: bool | None
@@ -250,6 +252,7 @@ class Config:
             welcome_points_channel_id=_get_int("WELCOME_POINTS_CHANNEL_ID"),
             welcome_window_minutes=_get_int("WELCOME_WINDOW_MINUTES"),
             welcome_shoutout_every=_get_int("WELCOME_SHOUTOUT_EVERY"),
+            indico_api_token=os.getenv("INDICO_API_TOKEN", "").strip() or None,
             hi_pileon_enabled=_get_bool("HI_PILEON_ENABLED"),
             hi_pileon_count=_get_int("HI_PILEON_COUNT"),
             slur_watch_enabled=_get_bool("SLUR_WATCH_ENABLED"),
