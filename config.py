@@ -131,6 +131,10 @@ class Config:
     hi_enabled: bool | None
     hi_per_week: int | None
     hi_channel_id: int | None
+    welcome_points_enabled: bool | None
+    welcome_points_channel_id: int | None
+    welcome_window_minutes: int | None
+    welcome_shoutout_every: int | None
     hi_pileon_enabled: bool | None
     hi_pileon_count: int | None
     slur_watch_enabled: bool | None
@@ -242,6 +246,10 @@ class Config:
             hi_enabled=_get_bool("HI_ENABLED"),
             hi_per_week=_get_int("HI_PER_WEEK"),
             hi_channel_id=_get_int("HI_CHANNEL_ID"),
+            welcome_points_enabled=_get_bool("WELCOME_POINTS_ENABLED"),
+            welcome_points_channel_id=_get_int("WELCOME_POINTS_CHANNEL_ID"),
+            welcome_window_minutes=_get_int("WELCOME_WINDOW_MINUTES"),
+            welcome_shoutout_every=_get_int("WELCOME_SHOUTOUT_EVERY"),
             hi_pileon_enabled=_get_bool("HI_PILEON_ENABLED"),
             hi_pileon_count=_get_int("HI_PILEON_COUNT"),
             slur_watch_enabled=_get_bool("SLUR_WATCH_ENABLED"),
