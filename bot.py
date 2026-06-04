@@ -47,6 +47,7 @@ INITIAL_COGS = (
     "cogs.serverlog",
     "cogs.randomhi",
     "cogs.welcomepoints",
+    "cogs.events",
     "cogs.hipileon",
     "cogs.slurwatch",
     "cogs.argument",
