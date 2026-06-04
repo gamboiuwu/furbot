@@ -344,25 +344,42 @@ class Events(commands.Cog):
         )
 
     async def _download_image(self, url: str | None) -> bytes | None:
+        data, _ = await self._fetch_image(url)
+        return data
+
+    async def _fetch_image(self, url: str | None) -> tuple[bytes | None, str]:
+        """Download + validate an image. Tries with the API token and without it
+        (Indico's web/attachment layer often rejects the API token), following
+        redirects. Returns (bytes_or_None, debug_string)."""
         if not url:
-            return None
-        headers = {"User-Agent": "FurBot/1.0 (+https://nyfurs.org)"}
-        if url.startswith(self._base()) and self.config.indico_api_token:
-            headers["Authorization"] = f"Bearer {self.config.indico_api_token}"
+            return None, "no url"
+        base = self._base()
+        token = self.config.indico_api_token
+        # Attempt with auth (for indico-hosted URLs) then without.
+        variants: list[dict] = []
+        if url.startswith(base) and token:
+            variants.append({"Authorization": f"Bearer {token}"})
+        variants.append({})
+        last = "no attempt"
         try:
             timeout = aiohttp.ClientTimeout(total=15)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status != 200:
-                        return None
-                    data = await resp.read()
-            if not (0 < len(data) <= 8 * 1024 * 1024):
-                return None
-            # Accept if it's a real image by signature (don't trust Content-Type alone).
-            return data if self._looks_like_image(data) else None
-        except Exception:
-            log.debug("Could not download event image %s", url, exc_info=True)
-            return None
+                for hv in variants:
+                    headers = {"User-Agent": "FurBot/1.0 (+https://nyfurs.org)", **hv}
+                    try:
+                        async with session.get(url, headers=headers, allow_redirects=True) as resp:
+                            data = await resp.read()
+                            ctype = resp.headers.get("Content-Type", "?")
+                            auth = "auth" if hv else "noauth"
+                            last = f"status={resp.status} type={ctype} bytes={len(data)} ({auth})"
+                            if (resp.status == 200 and 0 < len(data) <= 8 * 1024 * 1024
+                                    and self._looks_like_image(data)):
+                                return data, last
+                    except Exception as exc:  # noqa: BLE001
+                        last = f"error={type(exc).__name__} ({'auth' if hv else 'noauth'})"
+        except Exception as exc:  # noqa: BLE001
+            return None, f"error={type(exc).__name__}"
+        return None, last
 
     async def _ensure_banner(self, se: discord.ScheduledEvent | None, ev: dict, base: str) -> bool:
         """If an existing scheduled event has no cover banner, try to add one."""
@@ -743,12 +760,12 @@ class Events(commands.Cog):
                 present = {k: target.get(k) for k in _IMAGE_KEYS if target.get(k)}
                 m = _IMG_SRC_RE.search(target.get("description") or "")
                 resolved = await self._resolve_image(target, base)
-                data = await self._download_image(resolved)
+                data, dbg = await self._fetch_image(resolved)
                 out += [
                     f"**Image fields:** {present or 'none'}",
                     f"**<img> in description:** {m.group(1) if m else 'none'}",
                     f"**Resolved image URL:** {resolved or 'none'}",
-                    f"**Download:** {'OK ' + str(len(data)) + ' bytes' if data else 'FAILED (non-200 or not a valid image)'}",
+                    f"**Download:** {'OK ' + str(len(data)) + ' bytes' if data else 'FAILED'} — `{dbg}`",
                 ]
         await interaction.followup.send("\n".join(out)[:1900], ephemeral=True)
 
