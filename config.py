@@ -139,6 +139,9 @@ class Config:
     indico_api_token: str | None
     events_sync_enabled: bool | None
     events_sync_interval_hours: int | None
+    events_interest_dm_enabled: bool | None
+    events_reminder_enabled: bool | None
+    events_reminder_hours: int | None
     hi_pileon_enabled: bool | None
     hi_pileon_count: int | None
     slur_watch_enabled: bool | None
@@ -257,6 +260,9 @@ class Config:
             indico_api_token=os.getenv("INDICO_API_TOKEN", "").strip() or None,
             events_sync_enabled=_get_bool("EVENTS_SYNC_ENABLED"),
             events_sync_interval_hours=_get_int("EVENTS_SYNC_INTERVAL_HOURS"),
+            events_interest_dm_enabled=_get_bool("EVENTS_INTEREST_DM_ENABLED"),
+            events_reminder_enabled=_get_bool("EVENTS_REMINDER_ENABLED"),
+            events_reminder_hours=_get_int("EVENTS_REMINDER_HOURS"),
             hi_pileon_enabled=_get_bool("HI_PILEON_ENABLED"),
             hi_pileon_count=_get_int("HI_PILEON_COUNT"),
             slur_watch_enabled=_get_bool("SLUR_WATCH_ENABLED"),

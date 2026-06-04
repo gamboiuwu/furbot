@@ -32,6 +32,7 @@ INTENTS = discord.Intents.default()
 INTENTS.members = True          # needed to add/remove roles and read member data
 INTENTS.message_content = True  # needed for prefix commands and content checks
 INTENTS.reactions = True        # needed for the reaction-to-role verification flow
+INTENTS.guild_scheduled_events = True  # needed for Interested add/remove on events
 
 # Cogs to load on startup. Add new feature modules here.
 INITIAL_COGS = (

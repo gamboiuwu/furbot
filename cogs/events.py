@@ -8,10 +8,12 @@ tunable via /config (indico_url, indico_category_id, events_days).
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import html
 import logging
 import re
+import time
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -23,7 +25,8 @@ from checks import NotStaff, is_staff
 
 log = logging.getLogger("furbot.events")
 
-EVENTS_POSTED = "events_posted"  # {indico_event_id: discord_scheduled_event_id}
+EVENTS_POSTED = "events_posted"      # {indico_event_id: {"se": scheduled_event_id, "url": event_url}}
+EVENTS_REMINDED = "events_reminded"  # [scheduled_event_id] already reminded (24h before)
 
 _IMAGE_KEYS = ("logo_url", "logoURL", "logo", "cover_url", "image_url")
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -87,12 +90,15 @@ class Events(commands.Cog):
         self.config = bot.config
         self.store = bot.store
         self.settings = bot.settings
+        self._interest_dm: dict[tuple, float] = {}  # (user_id, se_id, kind) -> last DM epoch
 
     async def cog_load(self) -> None:
         self.sync_loop.start()
+        self.reminder_loop.start()
 
     async def cog_unload(self) -> None:
         self.sync_loop.cancel()
+        self.reminder_loop.cancel()
 
     def _s(self, key: str):
         return self.settings.get(key)
@@ -285,8 +291,9 @@ class Events(commands.Cog):
             if not eid or eid in posted:
                 continue
             name = (ev.get("title") or "NYFurs Event")[:100]
+            url = ev.get("url") or f"{base}/event/{eid}/"
             if name.lower() in by_name:  # someone already added it manually
-                posted[eid] = by_name[name.lower()]
+                posted[eid] = {"se": by_name[name.lower()], "url": url}
                 continue
             start_epoch = _event_epoch(ev.get("startDate"))
             if not start_epoch:
@@ -297,7 +304,6 @@ class Events(commands.Cog):
             end_epoch = _event_epoch(ev.get("endDate"))
             end = (datetime.datetime.fromtimestamp(end_epoch, tz=datetime.timezone.utc)
                    if end_epoch and end_epoch > start_epoch else start + datetime.timedelta(hours=2))
-            url = ev.get("url") or f"{base}/event/{eid}/"
             location = (ev.get("location") or "").strip()[:100] or "See registration link"
             kwargs = dict(
                 name=name,
@@ -314,7 +320,7 @@ class Events(commands.Cog):
                 kwargs["image"] = image
             try:
                 se = await guild.create_scheduled_event(**kwargs)
-                posted[eid] = se.id
+                posted[eid] = {"se": se.id, "url": url}
                 created += 1
             except discord.Forbidden:
                 log.warning("Missing Manage Events permission — cannot create scheduled events")
@@ -347,6 +353,126 @@ class Events(commands.Cog):
     @sync_loop.before_loop
     async def _before_sync(self) -> None:
         await self.bot.wait_until_ready()
+
+    # ---- interest DMs + 24h reminders -----------------------------------
+
+    def _our_se_ids(self) -> set[int]:
+        ids = set()
+        for info in self.store.get(EVENTS_POSTED, {}).values():
+            ids.add(info.get("se") if isinstance(info, dict) else info)
+        return {i for i in ids if i}
+
+    def _event_url_for(self, se_id: int) -> str | None:
+        base = self._base()
+        for eid, info in self.store.get(EVENTS_POSTED, {}).items():
+            sid = info.get("se") if isinstance(info, dict) else info
+            if sid == se_id:
+                if isinstance(info, dict) and info.get("url"):
+                    return info["url"]
+                return f"{base}/event/{eid}/"
+        return None
+
+    def _interest_cooldown_ok(self, user_id: int, se_id: int, kind: str, hours: int = 6) -> bool:
+        key = (user_id, se_id, kind)
+        now = time.time()
+        if now - self._interest_dm.get(key, 0) < hours * 3600:
+            return False
+        self._interest_dm[key] = now
+        return True
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_user_add(self, event: discord.ScheduledEvent, user: discord.User) -> None:
+        if user.bot or not self._s("events_interest_dm_enabled"):
+            return
+        url = self._event_url_for(event.id)
+        if url is None or not self._interest_cooldown_ok(user.id, event.id, "add"):
+            return
+        starts = f"<t:{int(event.start_time.timestamp())}:R>" if event.start_time else "soon"
+        text = (
+            f"👋 Thanks for your interest in **{event.name}**!\n\n"
+            "Quick heads-up: marking *Interested* here doesn't sign you up. To actually register — "
+            "and answer any registration questions the event may have — finish on the event page:\n"
+            f"🔗 {url}\n\n"
+            f"It starts {starts}. Hope to see you there! 🐾"
+        )
+        try:
+            await user.send(text)
+        except discord.HTTPException:
+            pass
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_user_remove(self, event: discord.ScheduledEvent, user: discord.User) -> None:
+        if user.bot or not self._s("events_interest_dm_enabled"):
+            return
+        url = self._event_url_for(event.id)
+        if url is None or not self._interest_cooldown_ok(user.id, event.id, "remove"):
+            return
+        try:
+            await user.send(
+                f"Got it — you're no longer marked interested in **{event.name}**. "
+                f"If you change your mind, you can still register anytime here: {url}"
+            )
+        except discord.HTTPException:
+            pass
+
+    @tasks.loop(minutes=30)
+    async def reminder_loop(self) -> None:
+        if not self._s("events_reminder_enabled"):
+            return
+        guild = self._guild()
+        if guild is None:
+            return
+        hours = self._s("events_reminder_hours") or 24
+        now = discord.utils.utcnow()
+        our = self._our_se_ids()
+        reminded = set(self.store.get(EVENTS_REMINDED, []))
+        try:
+            sched = await guild.fetch_scheduled_events()
+        except discord.HTTPException:
+            sched = list(guild.scheduled_events)
+        changed = False
+        for se in sched:
+            if se.id not in our or se.id in reminded or not se.start_time:
+                continue
+            delta = (se.start_time - now).total_seconds()
+            if 0 < delta <= hours * 3600:
+                await self._remind_interested(se)
+                reminded.add(se.id)
+                changed = True
+        # Keep the reminded list from growing forever — drop events we no longer track.
+        pruned = {sid for sid in reminded if sid in our}
+        if changed or pruned != reminded:
+            await self.store.set(EVENTS_REMINDED, list(pruned))
+
+    @reminder_loop.before_loop
+    async def _before_reminder(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _remind_interested(self, se: discord.ScheduledEvent) -> None:
+        ts = int(se.start_time.timestamp())
+        url = self._event_url_for(se.id)
+        loc = f"\n📍 {se.location}" if se.location else ""
+        link = f"\n🔗 Details & registration: {url}" if url else ""
+        text = (
+            f"⏰ **Reminder: {se.name} is coming up!**\n"
+            f"It starts <t:{ts}:F> (<t:{ts}:R>).{loc}{link}\n\n"
+            "If you haven't registered yet, please do so at the link above — marking *Interested* on "
+            "Discord doesn't register you. See you there! 🐾"
+        )
+        count = 0
+        try:
+            async for user in se.users():
+                if getattr(user, "bot", False):
+                    continue
+                try:
+                    await user.send(text)
+                except discord.HTTPException:
+                    pass
+                count += 1
+                if count % 5 == 0:
+                    await asyncio.sleep(1)  # gentle rate limiting
+        except discord.HTTPException:
+            log.exception("Failed to fetch interested users for event %s", se.id)
 
     @app_commands.command(name="syncevents", description="(Staff) Post upcoming events to the server's Events page.")
     @is_staff()
