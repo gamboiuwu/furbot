@@ -131,6 +131,9 @@ class Config:
     slur_watch_enabled: bool | None
     argument_enabled: bool | None
     argument_channel_id: int | None
+    verify_copy_kick_enabled: bool | None
+    verify_copy_min_chars: int | None
+    verify_copy_window: int | None
     review_enabled: bool | None
     feedback_channel_id: int | None
     review_after_days: int | None
@@ -228,4 +231,7 @@ class Config:
             slur_watch_enabled=_get_bool("SLUR_WATCH_ENABLED"),
             argument_enabled=_get_bool("ARGUMENT_ENABLED"),
             argument_channel_id=_get_int("ARGUMENT_CHANNEL_ID"),
+            verify_copy_kick_enabled=_get_bool("VERIFY_COPY_KICK_ENABLED"),
+            verify_copy_min_chars=_get_int("VERIFY_COPY_MIN_CHARS"),
+            verify_copy_window=_get_int("VERIFY_COPY_WINDOW"),
         )

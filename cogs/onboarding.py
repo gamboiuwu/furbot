@@ -22,8 +22,10 @@ All buttons are persistent across restarts:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
+import re
 import time
 
 import discord
@@ -43,6 +45,7 @@ SUMMARY_MSG = "onboarding.summary_msg"  # {"channel_id": int, "message_id": int}
 # Members who posted in the verify channel and are awaiting a manual push.
 VERIFY_WAITING = "verify_waiting"     # {user_id: {at, escalated_at, mod_id, followed_up}}
 VERIFY_MESSAGES = "verify_messages"   # {user_id: [{"c": content, "t": epoch}, ...]} (cap 5)
+VERIFY_RECENT = "verify_recent"       # [{"h": content_hash, "uid": author_id, "t": epoch}] rolling window
 BLOCKED_CALLOUT = "blocked_callout"   # {mod_id: last_called_epoch} (cooldown for the call-out)
 
 STAFF_ONLY = "🔒 This action is for staff only."
@@ -202,6 +205,7 @@ class Onboarding(commands.Cog, MemberActions):
         self.config = bot.config
         self.store = bot.store
         self.settings = bot.settings
+        self._copy_kicked: set[int] = set()  # de-dupe copy kicks across rapid multi-message pastes
 
     async def cog_load(self) -> None:
         self.sweep.start()
@@ -953,6 +957,7 @@ class Onboarding(commands.Cog, MemberActions):
         a returning member isn't instantly reminded or kicked from old data."""
         gid = member.guild.id
         uid = str(member.id)
+        self._copy_kicked.discard(member.id)  # a rejoin gets a clean slate
 
         def mut(d: dict) -> None:
             d.get(REMINDED, {}).pop(f"{gid}:{uid}", None)
@@ -964,9 +969,9 @@ class Onboarding(commands.Cog, MemberActions):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Track unverified members who post in the verification channel, so we
-        can ping staff if they're left waiting too long."""
-        if message.author.bot or not self._s("verify_pending_enabled"):
+        """Verification-channel handling: anti-copy spam check, then track
+        unverified members so we can ping staff if they're left waiting."""
+        if message.author.bot:
             return
         if message.channel.id != self.config.verification_channel_id:
             return
@@ -975,8 +980,15 @@ class Onboarding(commands.Cog, MemberActions):
             return
         role = self._floofs_role(member.guild)
         if role is not None and role in member.roles:
-            return  # already verified
+            return  # already verified — ignore everything below
 
+        # Anti-copy: members who paste someone else's verification answer fail
+        # verification and are removed. If we kicked them, stop here.
+        if await self._handle_possible_copy(message, member):
+            return
+
+        if not self._s("verify_pending_enabled"):
+            return
         content = (message.content or "").strip()
         if message.attachments:
             content += ("\n" if content else "") + "📎 " + ", ".join(a.filename for a in message.attachments)
@@ -992,6 +1004,85 @@ class Onboarding(commands.Cog, MemberActions):
                 del msgs[:-5]  # keep the latest 5
 
         await self.store.update(mut)
+
+    # ---- anti-copy spam --------------------------------------------------
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Lower-case, collapse whitespace — so trivial spacing/case changes
+        still count as the same message."""
+        return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+    async def _handle_possible_copy(self, message: discord.Message, member: discord.Member) -> bool:
+        """If `message` duplicates another member's recent verification message,
+        kick the copier (spam) and alert mods. Returns True if they were kicked.
+
+        Guards against false positives: only exact (normalized) matches, only
+        against a *different* author, only messages of meaningful length, and
+        never staff. Everyone here writes their own answers, so an identical
+        long message is a strong copy-paste signal."""
+        if not self._s("verify_copy_kick_enabled") or self._is_staff(member):
+            return False
+        norm = self._normalize_text(message.content)
+        min_chars = self._s("verify_copy_min_chars") or 40
+        if len(norm) < min_chars:
+            return False  # too short to be a confident copy (e.g. a one-line rule)
+
+        fp = hashlib.sha1(norm.encode("utf-8")).hexdigest()
+        window = self._s("verify_copy_window") or 500
+        recent = self.store.get(VERIFY_RECENT, [])
+        original = next((e for e in recent if e.get("h") == fp and e.get("uid") != member.id), None)
+
+        # Always remember this message for future comparisons (cap the window).
+        def remember(d: dict) -> None:
+            lst = d.setdefault(VERIFY_RECENT, [])
+            lst.append({"h": fp, "uid": member.id, "t": int(time.time())})
+            if len(lst) > window:
+                del lst[: len(lst) - window]
+
+        await self.store.update(remember)
+
+        if original is None:
+            return False
+        if member.id in self._copy_kicked:
+            return True  # already being handled (multi-message paste)
+        self._copy_kicked.add(member.id)
+
+        guild = member.guild
+        orig_member = guild.get_member(original["uid"])
+        orig_name = orig_member.display_name if orig_member else f"user {original['uid']}"
+        dm = (
+            f"❌ **You've failed verification in {guild.name} and have been removed.**\n\n"
+            "Your verification message was an **exact copy of another member's message**, which we "
+            "flag as spam. Verification requires your own, genuine introduction in your own words.\n\n"
+            "If this was a genuine mistake, you're welcome to rejoin and verify with a message you write yourself."
+        )
+        ok = await self._kick(member, by=guild.me, reason="Copied another member's verification message (spam)", dm_text=dm)
+        await self._notify_spam_copy(guild, member, orig_name, message.content, kicked=ok)
+        return ok
+
+    async def _notify_spam_copy(
+        self, guild: discord.Guild, member: discord.Member, orig_name: str, content: str, *, kicked: bool
+    ) -> None:
+        """Alert mods that a verification message was a copy."""
+        log_id = self.config.log_channel_id
+        channel = self.bot.get_channel(log_id) if log_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        staff_ping = f"<@&{self.config.staff_role_id}> " if self.config.staff_role_id else ""
+        status = "was auto-kicked" if kicked else "could not be kicked (check my Kick Members permission)"
+        snippet = (content or "").strip().replace("\n", " ")[:500]
+        text = (
+            f"{staff_ping}🚨 **Spam flagged in verification** — **{member}** (`{member.id}`) {status} for "
+            f"posting a message identical to one already said in the last {self._s('verify_copy_window') or 500} "
+            f"messages (copied from **{orig_name}**).\n"
+            f"**The copied text:**\n> {snippet or '(no text)'}"
+        )
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions(roles=bool(staff_ping)))
+        except discord.HTTPException:
+            log.exception("Failed to post spam-copy alert")
+
 
     @tasks.loop(minutes=30)
     async def verify_pending_loop(self) -> None:

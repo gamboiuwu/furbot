@@ -76,6 +76,9 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "slur_watch_enabled":        (bool,  True,  "Respond 'THIS BETTER BE SATIRICAL' when someone uses the f-slur."),
     "argument_enabled":          (bool,  True,  "Once a week the bot has a self-argument in the welcome/general channel."),
     "argument_channel_id":       (int,   0,     "Channel for the weekly self-argument (0 = use the welcome channel)."),
+    "verify_copy_kick_enabled":  (bool,  True,  "Kick members who copy another person's verification message (spam)."),
+    "verify_copy_min_chars":     (int,   40,    "Ignore messages shorter than this for copy-detection (avoids false positives)."),
+    "verify_copy_window":        (int,   500,   "How many recent verification messages to compare against for copies."),
 }
 
 
