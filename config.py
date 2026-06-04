@@ -134,6 +134,11 @@ class Config:
     verify_copy_kick_enabled: bool | None
     verify_copy_min_chars: int | None
     verify_copy_window: int | None
+    risk_warnings_enabled: bool | None
+    risk_learn_enabled: bool | None
+    risk_dm_threshold: float | None
+    risk_raid_window_minutes: int | None
+    risk_raid_min_joins: int | None
     review_enabled: bool | None
     feedback_channel_id: int | None
     review_after_days: int | None
@@ -234,4 +239,9 @@ class Config:
             verify_copy_kick_enabled=_get_bool("VERIFY_COPY_KICK_ENABLED"),
             verify_copy_min_chars=_get_int("VERIFY_COPY_MIN_CHARS"),
             verify_copy_window=_get_int("VERIFY_COPY_WINDOW"),
+            risk_warnings_enabled=_get_bool("RISK_WARNINGS_ENABLED"),
+            risk_learn_enabled=_get_bool("RISK_LEARN_ENABLED"),
+            risk_dm_threshold=_get_float("RISK_DM_THRESHOLD"),
+            risk_raid_window_minutes=_get_int("RISK_RAID_WINDOW_MINUTES"),
+            risk_raid_min_joins=_get_int("RISK_RAID_MIN_JOINS"),
         )

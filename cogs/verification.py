@@ -109,6 +109,7 @@ class Verification(commands.Cog, MemberActions):
             self._bump_and_audit(data, "rejected", member, by)
 
         await self.store.update(_mutate)
+        await self._risk_outcome(member.id, 1)  # a rejection is a "spam" outcome to learn from
 
         log.info("Rejected (temp-banned) %s for %sh (by %s)", member, hours, by)
         await self._log_action(

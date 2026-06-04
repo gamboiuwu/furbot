@@ -787,6 +787,8 @@ class Onboarding(commands.Cog, MemberActions):
             result, label = f"⚠️ Asked {member.display_name} for more info.", f"⚠️ More info requested by {actor.display_name}"
         else:  # deny
             ok = await self._kick(member, by=actor, reason=f"Verification denied by {actor}", dm_text=self._removal_dm(guild))
+            # A deliberate denial is a "spam" outcome the risk checks learn from.
+            await self._risk_outcome(member.id, 1)
             if ok:
                 result, label = f"👢 {member.display_name} was denied and removed.", f"👢 Denied by {actor.display_name}"
             else:
@@ -966,6 +968,63 @@ class Onboarding(commands.Cog, MemberActions):
             d.get(VERIFY_MESSAGES, {}).pop(uid, None)
 
         await self.store.update(mut)
+        await self._risk_on_join(member)
+
+    # ---- join risk (scam/bot heads-up for mods) -------------------------
+
+    async def _risk_on_join(self, member: discord.Member) -> None:
+        """Score a new join and, if it looks like a likely scam/bot, DM a mod a
+        heads-up. The snapshot is always recorded so the checks can learn from
+        the eventual verify/deny outcome."""
+        risk = getattr(self.bot, "risk", None)
+        if risk is None or not self._s("risk_warnings_enabled"):
+            return
+        raid = await risk.note_join_and_check_raid(
+            window_minutes=self._s("risk_raid_window_minutes") or 10,
+            min_joins=self._s("risk_raid_min_joins") or 6,
+        )
+        feats, prob, reasons = risk.assess(member, raid=raid)
+        await risk.record(member.id, feats)
+        threshold = self._s("risk_dm_threshold") or 0.6
+        # Require real evidence: clear the threshold AND have either the hard
+        # spammer flag or at least two independent signals (keeps noise down).
+        strong = bool(feats.get("spammer_flag")) or len(reasons) >= 2
+        if prob >= threshold and strong:
+            await self._dm_mod_risk(member.guild, member, reasons)
+            await risk.mark_dmed(member.id)
+
+    async def _dm_mod_risk(self, guild: discord.Guild, member: discord.Member, reasons: list[str]) -> None:
+        import random
+
+        bullet = "\n".join(f"• {r}" for r in reasons[:6])
+        content = (
+            "🕵️ **Heads up — this new member may be a scam or bot account.**\n"
+            f"**{member}** (`{member.id}`) just joined **{guild.name}** and trips several of our "
+            f"security checks:\n{bullet}\n"
+            "Worth a closer look before verifying — if they check out, just verify them as normal."
+        )
+        embed = build_userinfo_embed(member, floofs_role_id=self.config.floofs_role_id, title="🕵️ Possible scam/bot")
+        role = guild.get_role(self.config.staff_role_id) if self.config.staff_role_id else None
+        candidates = [m for m in role.members if not m.bot] if role else []
+        random.shuffle(candidates)
+        for mod in candidates[:5]:
+            try:
+                await mod.send(content=content, embed=embed)
+                return
+            except discord.Forbidden:
+                continue
+            except discord.HTTPException:
+                continue
+        # No mod reachable by DM — drop it in the staff log channel instead.
+        log_id = self.config.log_channel_id
+        channel = self.bot.get_channel(log_id) if log_id else None
+        if isinstance(channel, discord.TextChannel):
+            ping = f"<@&{self.config.staff_role_id}> " if self.config.staff_role_id else ""
+            try:
+                await channel.send(ping + content, embed=embed,
+                                   allowed_mentions=discord.AllowedMentions(roles=bool(ping)))
+            except discord.HTTPException:
+                log.exception("Failed to post risk heads-up")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -1058,6 +1117,7 @@ class Onboarding(commands.Cog, MemberActions):
             "If this was a genuine mistake, you're welcome to rejoin and verify with a message you write yourself."
         )
         ok = await self._kick(member, by=guild.me, reason="Copied another member's verification message (spam)", dm_text=dm)
+        await self._risk_outcome(member.id, 1)  # a copy-paste kick is a clear spam outcome
         await self._notify_spam_copy(guild, member, orig_name, message.content, kicked=ok)
         return ok
 

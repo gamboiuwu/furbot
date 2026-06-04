@@ -198,7 +198,22 @@ class MemberActions:
         # Clear any pending warn-kick countdown now that they're verified.
         if str(member.id) in self.store.get(WARN_DEADLINE, {}):
             await self.store.update(lambda d: d.get(WARN_DEADLINE, {}).pop(str(member.id), None))
+        # Feed the "legit" outcome back to the join-risk checks.
+        await self._risk_outcome(member.id, 0)
         return True
+
+    async def _risk_outcome(self, user_id: int, label: int) -> None:
+        """Report a verify/deny outcome to the join-risk scorer so it adapts over
+        time (label 0 = legit/verified, 1 = denied/spam). Safe no-op if the
+        scorer is unavailable; just forgets the snapshot if learning is off."""
+        risk = getattr(self.bot, "risk", None)
+        if risk is None:
+            return
+        settings = getattr(self, "settings", None)
+        if settings is not None and not settings.get("risk_learn_enabled"):
+            await risk.forget(user_id)
+            return
+        await risk.resolve(user_id, label)
 
     async def _post_welcome(self, member: discord.Member) -> None:
         """Post a public welcome message when a member is verified (if a welcome

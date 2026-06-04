@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands
 
 from config import Config
+from risk import RiskScorer
 from settings import Settings
 from store import Store
 from webdav import WebDAVClient
@@ -68,6 +69,8 @@ class FurBot(commands.Bot):
         self.store = Store(local_dir=config.data_dir, webdav=webdav)
         # Runtime settings, persisted to the store and editable via /config.
         self.settings = Settings(self.store, config)
+        # Join risk scorer (learns from verify/deny outcomes over time).
+        self.risk = RiskScorer(self.store)
 
     async def setup_hook(self) -> None:
         # Prepare persistence before any cog needs it.

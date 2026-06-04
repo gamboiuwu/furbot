@@ -79,6 +79,11 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "verify_copy_kick_enabled":  (bool,  True,  "Kick members who copy another person's verification message (spam)."),
     "verify_copy_min_chars":     (int,   40,    "Ignore messages shorter than this for copy-detection (avoids false positives)."),
     "verify_copy_window":        (int,   500,   "How many recent verification messages to compare against for copies."),
+    "risk_warnings_enabled":     (bool,  True,  "DM a moderator when a new join looks like a likely scam/bot account."),
+    "risk_learn_enabled":        (bool,  True,  "Let the join-risk checks adapt over time from who gets verified vs denied."),
+    "risk_dm_threshold":         (float, 0.6,   "Risk score (0-1) at which to warn a mod about a new join. Higher = fewer alerts."),
+    "risk_raid_window_minutes":  (int,   10,    "Window for detecting a burst of rapid joins (raid)."),
+    "risk_raid_min_joins":       (int,   6,     "Joins within the window that count as a raid burst."),
 }
 
 
