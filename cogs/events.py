@@ -209,6 +209,43 @@ class Events(commands.Cog):
         )
         return "\n\n".join(parts)[:1000]
 
+    async def _fetch_event_detail(self, event_id) -> dict | None:
+        """Fetch one event's full export record (its description usually has more
+        HTML — and images — than the category summary feed)."""
+        base = self._base()
+        url = f"{base}/export/event/{event_id}.json"
+        headers = {
+            "Authorization": f"Bearer {self.config.indico_api_token}",
+            "Accept": "application/json",
+            "User-Agent": "FurBot/1.0 (+https://nyfurs.org)",
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, params={"detail": "events"}, headers=headers) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json(content_type=None)
+            results = data.get("results") if isinstance(data, dict) else None
+            return results[0] if results else None
+        except Exception:
+            log.debug("Could not fetch event detail for %s", event_id, exc_info=True)
+            return None
+
+    async def _resolve_image(self, ev: dict, base: str) -> str | None:
+        """Find a banner image: logo/cover field or topmost image in the
+        description. If none in the summary feed, fetch the full event detail
+        and scan its description's topmost image too."""
+        img = _event_image(ev, base)
+        if img:
+            return img
+        eid = ev.get("id")
+        if eid:
+            full = await self._fetch_event_detail(eid)
+            if full:
+                return _event_image(full, base)
+        return None
+
     async def _download_image(self, url: str | None) -> bytes | None:
         if not url:
             return None
@@ -272,7 +309,7 @@ class Events(commands.Cog):
                 location=location,
                 reason="Synced from events.nyfurs.org",
             )
-            image = await self._download_image(_event_image(ev, base))
+            image = await self._download_image(await self._resolve_image(ev, base))
             if image:
                 kwargs["image"] = image
             try:
