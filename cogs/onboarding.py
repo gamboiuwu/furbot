@@ -48,6 +48,7 @@ VERIFY_WAITING = "verify_waiting"     # {user_id: {at, escalated_at, mod_id, fol
 VERIFY_MESSAGES = "verify_messages"   # {user_id: [{"c": content, "t": epoch}, ...]} (cap 5)
 VERIFY_RECENT = "verify_recent"       # [{"c": normalized_text, "uid": author_id, "t": epoch}] rolling window
 VERIFY_THANKED = "verify_thanked"     # {user_id: epoch} — first-time posters already whispered a thanks
+VERIFY_COPY_OFFENSES = "verify_copy_offenses"  # {user_id: count} — copy-paste strikes (persists across rejoins)
 BLOCKED_CALLOUT = "blocked_callout"   # {mod_id: last_called_epoch} (cooldown for the call-out)
 
 STAFF_ONLY = "🔒 This action is for staff only."
@@ -1208,8 +1209,17 @@ class Onboarding(commands.Cog, MemberActions):
             return True  # already being handled (multi-message paste)
         self._copy_kicked.add(member.id)
 
-        # Mark the offending message with alert + kick reactions.
-        for emoji in ("🚨", "👢"):
+        # Count strikes across rejoins. First offense = kick (with a warning);
+        # second offense = permanent ban.
+        uid = str(member.id)
+        offenses = self.store.get(VERIFY_COPY_OFFENSES, {}).get(uid, 0) + 1
+        await self.store.update(
+            lambda d: d.setdefault(VERIFY_COPY_OFFENSES, {}).__setitem__(uid, offenses)
+        )
+        ban = offenses >= 2
+
+        # Mark the offending message: alert + (ban hammer / kick boot).
+        for emoji in (("🚨", "🔨") if ban else ("🚨", "👢")):
             try:
                 await message.add_reaction(emoji)
             except discord.HTTPException:
@@ -1217,20 +1227,34 @@ class Onboarding(commands.Cog, MemberActions):
 
         guild = member.guild
         pct = round(best * 100)
-        dm = (
-            f"❌ **You have FAILED verification in {guild.name} and have been removed.**\n\n"
-            f"Your verification message was **{pct}% identical to another member's message**. "
-            "Copying someone else's answers is treated as spam and is not allowed — verification "
-            "requires your own, original introduction written in your own words.\n\n"
-            "If you genuinely want to join, you may rejoin and verify with a message you write yourself. "
-            "If you believe this was a genuine mistake, please reach out to us at **safety@nyfurs.org**."
-        )
-        # Auto-kick only — no moderator alert, as requested.
-        ok = await self._kick(
-            member, by=guild.me,
-            reason=f"Verification message {pct}% similar to another member's (spam)", dm_text=dm,
-        )
-        await self._risk_outcome(member.id, 1)  # a copy-paste kick is a clear spam outcome
+        if ban:
+            dm = (
+                f"🔨 **You have been PERMANENTLY BANNED from {guild.name}.**\n\n"
+                f"You copied another member's verification message again ({pct}% identical) after being "
+                "warned. This is treated as spam, and the ban is permanent — you cannot be brought back "
+                "to the server.\n\n"
+                "If you believe this was a genuine mistake, you may appeal by reaching out to **safety@nyfurs.org**."
+            )
+            ok = await self._ban(
+                member, by=guild.me,
+                reason=f"Repeat verification copying ({pct}% match, strike {offenses})", dm_text=dm,
+            )
+        else:
+            dm = (
+                f"❌ **You have FAILED verification in {guild.name} and have been removed.**\n\n"
+                f"Your verification message was **{pct}% identical to another member's message**. "
+                "Copying someone else's answers is treated as spam and is not allowed — verification "
+                "requires your own, original introduction written in your own words.\n\n"
+                "If you genuinely want to join, you may rejoin and verify with a message you write yourself. "
+                "If you believe this was a genuine mistake, please reach out to us at **safety@nyfurs.org**.\n\n"
+                "⚠️ **Warning:** if you copy and paste someone's message in the verification channel one more "
+                "time, you will be **permanently banned** and cannot be brought back to the server."
+            )
+            ok = await self._kick(
+                member, by=guild.me,
+                reason=f"Verification message {pct}% similar to another member's (spam)", dm_text=dm,
+            )
+        await self._risk_outcome(member.id, 1)  # a copy-paste kick/ban is a clear spam outcome
         return ok
 
 
