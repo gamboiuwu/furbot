@@ -5,6 +5,13 @@ log channel; staff click buttons to actually send reminders or kick. Members
 who get a reminder can tap a button to escalate to a random moderator, who
 gets Approve / Needs-more-info / Deny buttons right in their DMs.
 
+ONE-MOD RULE: a given member is only ever escalated to a SINGLE moderator at a
+time. Every escalation path funnels through `_escalate`, which shares the
+ESCALATED dedupe, so we never DM two mods about the same person. Mod actions
+also no-op (with a clear "handle manually" notice) if the member is already
+verified or another mod has already handled the request — so a stale button
+can't double-warn or kick someone who's already in.
+
 All buttons are persistent across restarts:
   * the member and moderator DM buttons are `DynamicItem`s that encode the
     guild + user in their custom_id (DM interactions carry no guild context);
@@ -514,15 +521,7 @@ class Onboarding(commands.Cog, MemberActions):
             await interaction.followup.send("A moderator has already been notified — hang tight!", ephemeral=True)
             return
 
-        mod = await self._dm_random_mod(guild, member, reason)
-        if mod is None:
-            await self._escalate_to_log(guild, member, reason)
-
-        await self.store.update(
-            lambda d: d.setdefault(ESCALATED, {}).__setitem__(
-                key, {"at": int(time.time()), "mod_id": mod.id if mod else 0, "reason": reason}
-            )
-        )
+        await self._escalate(guild, member, reason)
         if reason == "phone":
             ack = (
                 "✅ Thanks! I've asked a moderator to **manually review** your account because of the "
@@ -534,6 +533,38 @@ class Onboarding(commands.Cog, MemberActions):
                 "verification soon. Hang tight!"
             )
         await interaction.followup.send(ack, ephemeral=True)
+
+    async def _escalate(self, guild: discord.Guild, member: discord.Member, reason: str) -> int | None:
+        """Escalate a member to **exactly one** moderator.
+
+        ONE-MOD RULE: never ping multiple mods for the same person. If the
+        member is already assigned to a mod (any reason), reuse that assignment
+        instead of DMing someone new. Returns the assigned mod id (0 = it went
+        to the log channel), or the existing assignment if already escalated.
+        """
+        key = f"{guild.id}:{member.id}"
+        existing = self.store.get(ESCALATED, {}).get(key)
+        if existing is not None:
+            return existing.get("mod_id")
+        mod = await self._dm_random_mod(guild, member, reason)
+        if mod is None:
+            await self._escalate_to_log(guild, member, reason)
+        mod_id = mod.id if mod else 0
+        await self._record_escalation(guild.id, member.id, mod_id, reason)
+        return mod_id
+
+    async def _record_escalation(self, guild_id: int, user_id: int, mod_id: int, reason: str) -> None:
+        """Mark a member as escalated (idempotent — won't clobber an existing
+        assignment). Presence of this entry is also what keeps the mod action
+        buttons valid; clearing it marks the request as handled."""
+        key = f"{guild_id}:{user_id}"
+
+        def mut(d: dict) -> None:
+            d.setdefault(ESCALATED, {}).setdefault(
+                key, {"at": int(time.time()), "mod_id": mod_id, "reason": reason}
+            )
+
+        await self.store.update(mut)
 
     def _escalation_embed(
         self, guild: discord.Guild, member: discord.Member, reason: str = "waiting",
@@ -718,11 +749,33 @@ class Onboarding(commands.Cog, MemberActions):
             return
 
         role = self._floofs_role(guild)
+        key = f"{guild_id}:{user_id}"
+
+        # Already verified — never warn/kick on a stale button. Tell staff to
+        # make any further changes manually from now on.
+        if role is not None and role in member.roles:
+            await interaction.response.edit_message(view=disabled_view("Already verified"))
+            await self.store.update(lambda d: d.get(ESCALATED, {}).pop(key, None))
+            await interaction.followup.send(
+                f"⚠️ **{member.display_name}** is already verified — no changes were made. "
+                "Please make any further changes to them manually from now on.",
+                ephemeral=True,
+            )
+            return
+
+        # Another moderator already handled this request (the escalation was
+        # cleared), or it's a duplicate/stale button — do nothing rather than
+        # double-acting (e.g. warning the same person twice).
+        if key not in self.store.get(ESCALATED, {}):
+            await interaction.response.edit_message(view=disabled_view("Already handled"))
+            await interaction.followup.send(
+                "Another moderator already handled this request — no changes were made. "
+                "Please make any further changes manually.",
+                ephemeral=True,
+            )
+            return
+
         if action == "approve":
-            if role and role in member.roles:
-                await interaction.response.edit_message(view=disabled_view("Already verified"))
-                await interaction.followup.send("They're already verified.", ephemeral=True)
-                return
             await self._grant_floofs(member, by=actor, reason="onboarding escalation")
             result, label = f"✅ You verified {member.display_name}.", f"✅ Approved by {actor.display_name}"
         elif action == "warn":
@@ -969,11 +1022,11 @@ class Onboarding(commands.Cog, MemberActions):
                 continue
             if info.get("escalated_at") is None:
                 if now - info.get("at", now) >= esc_s:
-                    mod = await self._dm_random_mod(guild, member, "pending")
-                    if mod is None:
-                        await self._escalate_to_log(guild, member, "pending")
+                    # Shares the ESCALATED dedupe, so if they already tapped
+                    # "I'm waiting" we reuse that mod instead of pinging a new one.
+                    mod_id = await self._escalate(guild, member, "pending")
                     info["escalated_at"] = now
-                    info["mod_id"] = mod.id if mod else 0
+                    info["mod_id"] = mod_id or 0
                     changed = True
             elif not info.get("followed_up"):
                 if now - info["escalated_at"] >= fu_s:
@@ -988,7 +1041,12 @@ class Onboarding(commands.Cog, MemberActions):
         await self.bot.wait_until_ready()
 
     async def _followup_mod(self, guild: discord.Guild, member: discord.Member, mod_id: int) -> None:
-        """Nudge the moderator who was pinged but hasn't acted."""
+        """Nudge the *same* moderator who was pinged but hasn't acted. We never
+        reassign to a different mod here (one-mod rule); if the original is
+        unreachable we fall back to the staff log channel instead of pinging a
+        second person."""
+        # Keep the escalation on record so its action buttons stay valid.
+        await self._record_escalation(guild.id, member.id, mod_id, "pending")
         content = messages.pick(messages.MOD_FOLLOWUP, member=member.display_name)
         msgs = await self._collect_messages(guild, member)
         embed = self._escalation_embed(guild, member, "pending", msgs)
@@ -1001,9 +1059,8 @@ class Onboarding(commands.Cog, MemberActions):
                 await self._call_out_blocked(guild, mod)  # they blocked/closed DMs
             except discord.HTTPException:
                 pass
-        # Original mod unreachable — try a fresh one, else the log channel.
-        if await self._dm_random_mod(guild, member, "pending") is None:
-            await self._escalate_to_log(guild, member, "pending")
+        # Original mod unreachable — escalate to the log channel, not a new mod.
+        await self._escalate_to_log(guild, member, "pending")
 
     # ---- manual trigger --------------------------------------------------
 
