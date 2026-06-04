@@ -1,5 +1,5 @@
-"""Occasionally says "fart" in the welcome channel. ~5 random times a week,
-with the first one about 2 minutes after startup. Peak engineering. 💨
+"""Occasionally says "hi" in the welcome channel. ~5 random times a week,
+with the first one about 2 minutes after startup. Just a friendly hello. 👋
 """
 
 from __future__ import annotations
@@ -63,9 +63,9 @@ class Fart(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
         try:
-            await channel.send("fart", allowed_mentions=discord.AllowedMentions.none())
+            await channel.send("hi", allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
-            log.exception("Failed to fart")
+            log.exception("Failed to say hi")
 
 
 async def setup(bot: commands.Bot) -> None:
