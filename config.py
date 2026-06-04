@@ -128,9 +128,9 @@ class Config:
     task_nudge_repeat_days: int | None
     dm_relay_enabled: bool | None
     member_log_enabled: bool | None
-    fart_enabled: bool | None
-    fart_per_week: int | None
-    fart_channel_id: int | None
+    hi_enabled: bool | None
+    hi_per_week: int | None
+    hi_channel_id: int | None
     hi_pileon_enabled: bool | None
     hi_pileon_count: int | None
     slur_watch_enabled: bool | None
@@ -239,9 +239,9 @@ class Config:
             task_nudge_repeat_days=_get_int("TASK_NUDGE_REPEAT_DAYS"),
             dm_relay_enabled=_get_bool("DM_RELAY_ENABLED"),
             member_log_enabled=_get_bool("MEMBER_LOG_ENABLED"),
-            fart_enabled=_get_bool("FART_ENABLED"),
-            fart_per_week=_get_int("FART_PER_WEEK"),
-            fart_channel_id=_get_int("FART_CHANNEL_ID"),
+            hi_enabled=_get_bool("HI_ENABLED"),
+            hi_per_week=_get_int("HI_PER_WEEK"),
+            hi_channel_id=_get_int("HI_CHANNEL_ID"),
             hi_pileon_enabled=_get_bool("HI_PILEON_ENABLED"),
             hi_pileon_count=_get_int("HI_PILEON_COUNT"),
             slur_watch_enabled=_get_bool("SLUR_WATCH_ENABLED"),

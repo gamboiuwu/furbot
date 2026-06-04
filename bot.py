@@ -45,7 +45,7 @@ INITIAL_COGS = (
     "cogs.taskboard",
     "cogs.dmrelay",
     "cogs.serverlog",
-    "cogs.fart",
+    "cogs.randomhi",
     "cogs.hipileon",
     "cogs.slurwatch",
     "cogs.argument",
