@@ -330,3 +330,30 @@ DM_RELAY_ACK = [
     "Done and sent to a moderator. We'll be in touch if needed — thanks!",
 ]
 
+
+# Whispered (DM'd) to a member the first time they post in the verification
+# channel, as long as nothing's flagged. 20 variants so it never reads canned.
+# Tokens: {name}, {server}, {chan}
+VERIFY_THANKS = [
+    "Thanks so much for posting, {name}! A moderator will look you over and verify you soon — hang tight. ^_^",
+    "Ahh thank you, {name}~ got your answers! Just sit tight while a mod verifies you. owo",
+    "Thank you for that, {name}! You're in the queue now — please wait a little while for a moderator to verify you.",
+    "Appreciate it, {name}! I've made about a hundred of these little thank-yous today, but yours counts too — wait tight for verification. :3",
+    "Thanks {name}! Your verification post is in. A human moderator will get to you shortly, so please hang on a bit.",
+    "Got it, {name} — thank you! Verification's done by hand, so give the mods a little time and you'll be in soon. ^w^",
+    "Thank you kindly, {name}! You're on the list. A moderator will verify you when they get a chance — please be patient~",
+    "Yay, thanks for posting {name}! I'll let the mods know you're waiting. Sit tight for verification. ^_^",
+    "Thanks a bunch, {name}! Between you and me I've been typing 'thank you' all day, but I mean it — please wait for a mod to verify you. owo",
+    "Thank you, {name}! Your answers are noted. Verification is manual, so hang tight and a moderator will sort you out soon.",
+    "Much appreciated, {name}! You've done your part — now just wait a bit while a moderator verifies you. :3",
+    "Thanks for the intro, {name}! A mod will read it over and verify you soon. Please be patient in the meantime~",
+    "Thank you for posting, {name}! I've got your details — a moderator will verify you shortly, so hang on a little. ^w^",
+    "Ooh thank you {name}! That's another one for my pile of thank-yous today. A mod will verify you soon — wait tight! owo",
+    "Thanks, {name}! You're all set on your end. Now we just wait for a moderator to verify you — shouldn't be too long.",
+    "Thank you {name}! Noted and queued. A human will verify you when they're around, so please hang tight. ^_^",
+    "Cheers, {name}! Thanks for the answers. Verification's done manually, so give it a little time and you'll be in. :3",
+    "Thank you for that, {name}~ I've made a lot of these greetings, but yours is logged! Please wait for a mod to verify you.",
+    "Got your message, {name} — thank you! A moderator will check you over and verify you soon. Hang tight, okay? ^w^",
+    "Thanks so much for posting, {name}! Sit back and relax while a moderator gets you verified. It won't be long. owo",
+]
+

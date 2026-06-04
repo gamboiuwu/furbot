@@ -108,6 +108,7 @@ class Config:
     birthday_promo_days: int | None
     birthday_promo_message: str | None
     leaderboard_channel_id: int | None
+    verify_thanks_enabled: bool | None
     verify_pending_enabled: bool | None
     verify_escalate_hours: int | None
     verify_followup_hours: int | None
@@ -208,6 +209,7 @@ class Config:
             birthday_promo_days=_get_int("BIRTHDAY_PROMO_DAYS"),
             birthday_promo_message=os.getenv("BIRTHDAY_PROMO_MESSAGE", "").strip() or None,
             leaderboard_channel_id=_get_int("LEADERBOARD_CHANNEL_ID"),
+            verify_thanks_enabled=_get_bool("VERIFY_THANKS_ENABLED"),
             verify_pending_enabled=_get_bool("VERIFY_PENDING_ENABLED"),
             verify_escalate_hours=_get_int("VERIFY_ESCALATE_HOURS"),
             verify_followup_hours=_get_int("VERIFY_FOLLOWUP_HOURS"),

@@ -34,6 +34,7 @@ from discord.ext import commands, tasks
 
 import messages
 from checks import NotStaff, is_staff
+from risk import RISK_PENDING
 from verification_actions import STATS, VERIFICATIONS, WARN_DEADLINE, MemberActions, build_userinfo_embed
 
 log = logging.getLogger("furbot.onboarding")
@@ -46,6 +47,7 @@ SUMMARY_MSG = "onboarding.summary_msg"  # {"channel_id": int, "message_id": int}
 VERIFY_WAITING = "verify_waiting"     # {user_id: {at, escalated_at, mod_id, followed_up}}
 VERIFY_MESSAGES = "verify_messages"   # {user_id: [{"c": content, "t": epoch}, ...]} (cap 5)
 VERIFY_RECENT = "verify_recent"       # [{"c": normalized_text, "uid": author_id, "t": epoch}] rolling window
+VERIFY_THANKED = "verify_thanked"     # {user_id: epoch} — first-time posters already whispered a thanks
 BLOCKED_CALLOUT = "blocked_callout"   # {mod_id: last_called_epoch} (cooldown for the call-out)
 
 STAFF_ONLY = "🔒 This action is for staff only."
@@ -966,6 +968,7 @@ class Onboarding(commands.Cog, MemberActions):
             d.get(WARN_DEADLINE, {}).pop(uid, None)
             d.get(VERIFY_WAITING, {}).pop(uid, None)
             d.get(VERIFY_MESSAGES, {}).pop(uid, None)
+            d.get(VERIFY_THANKED, {}).pop(uid, None)  # a rejoin can be greeted again
 
         await self.store.update(mut)
         await self._risk_on_join(member)
@@ -1046,6 +1049,9 @@ class Onboarding(commands.Cog, MemberActions):
         if await self._handle_possible_copy(message, member):
             return
 
+        # A varied, private thank-you on their first (non-flagged) post.
+        await self._maybe_thank_first_post(member)
+
         if not self._s("verify_pending_enabled"):
             return
         content = (message.content or "").strip()
@@ -1071,6 +1077,34 @@ class Onboarding(commands.Cog, MemberActions):
         """Lower-case, collapse whitespace — so trivial spacing/case changes
         still count as the same message."""
         return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+    async def _maybe_thank_first_post(self, member: discord.Member) -> None:
+        """Whisper (DM) a varied thank-you the first time a member posts in the
+        verification channel — unless their account was flagged as a likely
+        scam/bot on join. Never posted publicly; if their DMs are closed we just
+        skip it (no channel message)."""
+        if not self._s("verify_thanks_enabled"):
+            return
+        uid = str(member.id)
+        if uid in self.store.get(VERIFY_THANKED, {}):
+            return  # already greeted on an earlier post
+
+        async def _mark() -> None:
+            await self.store.update(
+                lambda d: d.setdefault(VERIFY_THANKED, {}).__setitem__(uid, int(time.time()))
+            )
+
+        # Don't thank an account we flagged as a likely scam/bot on join.
+        pend = self.store.get(RISK_PENDING, {}).get(uid)
+        if pend and pend.get("dmed"):
+            await _mark()
+            return
+        text = messages.pick(
+            messages.VERIFY_THANKS, name=member.display_name, server=member.guild.name,
+            chan=self._verification_channel_mention(),
+        )
+        await self._try_dm(member, text)  # whisper only — never posted in the channel
+        await _mark()
 
     async def _handle_possible_copy(self, message: discord.Message, member: discord.Member) -> bool:
         """If `message` is at least `verify_copy_similarity` similar to another
