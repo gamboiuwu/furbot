@@ -27,87 +27,13 @@ log = logging.getLogger("furbot.events")
 
 EVENTS_POSTED = "events_posted"      # {indico_event_id: {"se": scheduled_event_id, "url": event_url}}
 EVENTS_REMINDED = "events_reminded"  # [scheduled_event_id] already reminded (24h before)
-REG_PROFILES = "reg_profiles"        # {user_id: {email, name, updated_at, registrations: {eid: {...}}}}
-
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-class RegistrationModal(discord.ui.Modal):
-    """Collects (and pre-fills from saved details) the info needed to register."""
-
-    def __init__(self, cog: "Events", eid: str, event_name: str, url: str, profile: dict | None) -> None:
-        super().__init__(title=("Register: " + event_name)[:45])  # Discord caps titles at 45 chars
-        self.cog = cog
-        self.eid = eid
-        self.event_name = event_name
-        self.url = url
-        prof = profile or {}
-        self.email = discord.ui.TextInput(
-            label="Email", placeholder="you@example.com",
-            default=prof.get("email"), required=True, max_length=200,
-        )
-        self.full_name = discord.ui.TextInput(
-            label="Full name", default=prof.get("name"), required=True, max_length=200,
-        )
-        self.add_item(self.email)
-        self.add_item(self.full_name)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        email = self.email.value.strip()
-        name = self.full_name.value.strip()
-        if not _EMAIL_RE.match(email):
-            await interaction.response.send_message(
-                "That email doesn't look right — tap the button and try again.", ephemeral=True
-            )
-            return
-        await self.cog._save_registration(interaction.user.id, email, name, self.eid, self.event_name, self.url)
-        msg = await self.cog._submit_or_link(interaction.user.id, self.eid, self.event_name, self.url, email, name)
-        await interaction.response.send_message(msg, ephemeral=True)
-
-
-class RegisterButton(discord.ui.DynamicItem[discord.ui.Button], template=r"reg:v1:(?P<eid>\d+)"):
-    """Persistent 'Register' button shown on the Interested DM (survives restarts;
-    the event id is encoded in the custom_id and looked up in the store)."""
-
-    def __init__(self, eid: str) -> None:
-        self.eid = str(eid)
-        super().__init__(
-            discord.ui.Button(
-                label="Register / save my info", emoji="📝",
-                style=discord.ButtonStyle.primary, custom_id=f"reg:v1:{eid}",
-            )
-        )
-
-    @classmethod
-    async def from_custom_id(cls, interaction, item, match):
-        return cls(match["eid"])
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        cog: "Events | None" = interaction.client.get_cog("Events")
-        if cog is None:
-            await interaction.response.send_message("This isn't available right now.", ephemeral=True)
-            return
-        await cog.open_registration_modal(interaction, self.eid)
-
-
-class ForgetView(discord.ui.View):
-    def __init__(self, cog: "Events", user_id: int) -> None:
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.user_id = user_id
-
-    @discord.ui.button(label="Forget my saved info", emoji="🗑️", style=discord.ButtonStyle.danger)
-    async def forget(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This isn't for you.", ephemeral=True)
-            return
-        await self.cog._forget_profile(self.user_id)
-        button.disabled = True
-        await interaction.response.edit_message(content="🗑️ Cleared your saved registration details.", view=self)
+REG_PROFILES = "reg_profiles"        # legacy key — registration details are no longer collected;
+                                     # any previously-stored data is purged on cog load.
 
 _IMAGE_KEYS = ("logo_url", "logoURL", "logo", "cover_url", "image_url")
 _TAG_RE = re.compile(r"<[^>]+>")
 _IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.I)
+_IMG_EXT_RE = re.compile(r"\.(?:png|jpe?g|gif|webp)(?:$|[?#])", re.I)
 
 
 def _strip_html(text: str | None, limit: int = 240) -> str:
@@ -148,17 +74,51 @@ def _abs_url(url: str, base: str) -> str:
     return base + "/" + url
 
 
-def _event_image(event: dict, base: str) -> str | None:
-    """Find an image that lives on the event: a logo/cover field, or the first
-    image embedded in the event's description. Relative URLs are made absolute."""
+def _material_images(event: dict, base: str) -> list[str]:
+    """Indico-hosted image files attached to the event (its material/attachment
+    resources), with banner-named files first."""
+    scored: list[tuple[str, bool]] = []
+    for mat in (event.get("material") or []):
+        for res in (mat.get("resources") or []):
+            u = res.get("url")
+            fn = (res.get("fileName") or res.get("name") or "")
+            if isinstance(u, str) and _IMG_EXT_RE.search(fn or u):
+                scored.append((_abs_url(u, base), "banner" in fn.lower()))
+    scored.sort(key=lambda t: not t[1])  # banner-named first, otherwise keep order
+    out: list[str] = []
+    for u, _ in scored:
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def _image_candidates(event: dict, base: str) -> list[str]:
+    """Ordered banner-image candidates, most-preferred first. Indico-hosted
+    images are favored over external ones, because external CDNs (e.g. furtrack)
+    block hotlinking and would 403 on download."""
+    cands: list[str] = []
+
+    def add(url: str | None) -> None:
+        if url and url not in cands:
+            cands.append(url)
+
+    # 1) An explicit logo/cover field on the event.
     for k in _IMAGE_KEYS:
         v = event.get(k)
         if isinstance(v, str) and v.strip():
-            return _abs_url(v, base)
-    m = _IMG_SRC_RE.search(event.get("description") or "")
-    if m:
-        return _abs_url(m.group(1), base)
-    return None
+            add(_abs_url(v, base))
+    desc_imgs = [_abs_url(u, base) for u in _IMG_SRC_RE.findall(event.get("description") or "")]
+    # 2) Description images hosted on Indico (the curator's chosen banner).
+    for u in desc_imgs:
+        if u.startswith(base):
+            add(u)
+    # 3) Indico-hosted material/attachment images.
+    for u in _material_images(event, base):
+        add(u)
+    # 4) External description images (last resort — may be hotlink-blocked).
+    for u in desc_imgs:
+        add(u)
+    return cands
 
 
 class Events(commands.Cog):
@@ -170,6 +130,11 @@ class Events(commands.Cog):
         self._interest_dm: dict[tuple, float] = {}  # (user_id, se_id, kind) -> last DM epoch
 
     async def cog_load(self) -> None:
+        # We no longer collect registration details in-DM. Purge any email/name
+        # data collected by the previous "Register / save my info" feature.
+        if self.store.get(REG_PROFILES):
+            await self.store.update(lambda d: d.pop(REG_PROFILES, None))
+            log.info("Purged stored registration profiles (feature removed)")
         self.sync_loop.start()
         self.reminder_loop.start()
 
@@ -237,9 +202,9 @@ class Events(commands.Cog):
             if desc:
                 embed.description = desc
 
-            img = _event_image(ev, base)
-            if img:
-                embed.set_thumbnail(url=img)  # shows on the side of the embed
+            cands = _image_candidates(ev, base)
+            if cands:
+                embed.set_thumbnail(url=cands[0])  # shows on the side of the embed
             embeds.append(embed)
         return embeds
 
@@ -315,23 +280,34 @@ class Events(commands.Cog):
             log.debug("Could not fetch event detail for %s", event_id, exc_info=True)
             return None
 
-    async def _resolve_image(self, ev: dict, base: str) -> str | None:
-        """Find a banner image: a logo/cover field, the topmost image in the
-        description (summary feed, then the fuller event detail), and finally the
-        event's conventional Indico logo URL."""
-        img = _event_image(ev, base)
-        if img:
-            return img
+    async def _resolve_image_candidates(self, ev: dict, base: str) -> list[str]:
+        """Ordered list of banner-image URLs to try: candidates from the summary
+        record, then from the fuller event detail (richer description/material),
+        and finally the event's conventional Indico logo endpoint."""
+        cands = _image_candidates(ev, base)
         eid = ev.get("id")
         if eid:
             full = await self._fetch_event_detail(eid)
             if full:
-                img = _event_image(full, base)
-                if img:
-                    return img
-            # Last resort: the event's logo endpoint (validated on download).
-            return f"{base}/event/{eid}/logo"
-        return None
+                for u in _image_candidates(full, base):
+                    if u not in cands:
+                        cands.append(u)
+            logo = f"{base}/event/{eid}/logo"  # validated on download
+            if logo not in cands:
+                cands.append(logo)
+        return cands
+
+    async def _best_banner(self, ev: dict, base: str) -> tuple[bytes | None, str | None, str]:
+        """Try each candidate image in order; return the first that downloads as a
+        valid image. Returns (bytes_or_None, winning_url_or_None, debug_string)."""
+        cands = await self._resolve_image_candidates(ev, base)
+        last = "no candidates"
+        for url in cands:
+            data, dbg = await self._fetch_image(url)
+            last = f"{url} -> {dbg}"
+            if data:
+                return data, url, last
+        return None, None, last
 
     @staticmethod
     def _looks_like_image(data: bytes) -> bool:
@@ -343,10 +319,6 @@ class Events(commands.Cog):
             or (sig[:4] == b"RIFF" and sig[8:12] == b"WEBP")  # WEBP
         )
 
-    async def _download_image(self, url: str | None) -> bytes | None:
-        data, _ = await self._fetch_image(url)
-        return data
-
     async def _fetch_image(self, url: str | None) -> tuple[bytes | None, str]:
         """Download + validate an image. Tries with the API token and without it
         (Indico's web/attachment layer often rejects the API token), following
@@ -355,11 +327,13 @@ class Events(commands.Cog):
             return None, "no url"
         base = self._base()
         token = self.config.indico_api_token
-        # Attempt with auth (for indico-hosted URLs) then without.
-        variants: list[dict] = []
+        # Indico's file/attachment layer rejects the personal API token with
+        # HTTP 403 "insufficient_scope" — public event images download fine with
+        # NO auth. So try without the token first, and only fall back to the
+        # token for resources that might actually require it.
+        variants: list[dict] = [{}]
         if url.startswith(base) and token:
             variants.append({"Authorization": f"Bearer {token}"})
-        variants.append({})
         last = "no attempt"
         try:
             timeout = aiohttp.ClientTimeout(total=15)
@@ -387,7 +361,7 @@ class Events(commands.Cog):
             return False
         if getattr(se, "cover_image", None) is not None or getattr(se, "image", None) is not None:
             return False  # already has a banner
-        image = await self._download_image(await self._resolve_image(ev, base))
+        image, _, _ = await self._best_banner(ev, base)
         if not image:
             return False
         try:
@@ -451,7 +425,7 @@ class Events(commands.Cog):
                 location=location,
                 reason="Synced from events.nyfurs.org",
             )
-            image = await self._download_image(await self._resolve_image(ev, base))
+            image, _, _ = await self._best_banner(ev, base)
             if image:
                 kwargs["image"] = image
             try:
@@ -508,92 +482,6 @@ class Events(commands.Cog):
                 return f"{base}/event/{eid}/"
         return None
 
-    def _indico_id_for(self, se_id: int) -> str | None:
-        for eid, info in self.store.get(EVENTS_POSTED, {}).items():
-            sid = info.get("se") if isinstance(info, dict) else info
-            if sid == se_id:
-                return str(eid)
-        return None
-
-    # ---- registration details (remembered per user) --------------------
-
-    def _get_profile(self, user_id: int) -> dict | None:
-        return self.store.get(REG_PROFILES, {}).get(str(user_id))
-
-    async def open_registration_modal(self, interaction: discord.Interaction, eid: str) -> None:
-        info = self.store.get(EVENTS_POSTED, {}).get(str(eid))
-        name = (info.get("name") if isinstance(info, dict) else None) or "this event"
-        url = (info.get("url") if isinstance(info, dict) else None) or f"{self._base()}/event/{eid}/"
-        try:
-            await interaction.response.send_modal(
-                RegistrationModal(self, str(eid), name, url, self._get_profile(interaction.user.id))
-            )
-        except discord.HTTPException:
-            log.exception("Failed to open registration modal for event %s", eid)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "Couldn't open the registration form — please try again in a moment.", ephemeral=True
-                )
-
-    async def _save_registration(self, user_id: int, email: str, name: str,
-                                 eid: str, event_name: str, url: str) -> None:
-        def mut(d: dict) -> None:
-            prof = d.setdefault(REG_PROFILES, {}).setdefault(str(user_id), {})
-            prof["email"] = email
-            prof["name"] = name
-            prof["updated_at"] = int(time.time())
-            regs = prof.setdefault("registrations", {})
-            regs[str(eid)] = {"event": event_name, "url": url, "at": int(time.time())}
-
-        await self.store.update(mut)
-
-    async def _forget_profile(self, user_id: int) -> None:
-        await self.store.update(lambda d: d.get(REG_PROFILES, {}).pop(str(user_id), None))
-
-    async def _submit_or_link(self, user_id: int, eid: str, event_name: str,
-                              url: str, email: str, name: str) -> str:
-        """Submit the registration to Indico if the API is verified+enabled;
-        otherwise save the details and hand back the link to finish on the site."""
-        if self._s("events_register_submit_enabled"):
-            ok, detail = await self._submit_to_indico(eid, email, name)
-            if ok:
-                return f"✅ You're registered for **{event_name}**! I've saved your details for next time. 🐾"
-            return (
-                f"⚠️ I saved your details, but couldn't auto-complete the registration ({detail}). "
-                f"Please finish it here: {url}"
-            )
-        return (
-            f"✅ Saved your details for **{event_name}** (I'll remember them next time).\n"
-            f"To finish registering, complete it here — your info is ready to paste in:\n🔗 {url}"
-        )
-
-    async def _submit_to_indico(self, eid: str, email: str, name: str) -> tuple[bool, str]:
-        """Placeholder for the real Indico registration POST. Disabled until the
-        registration endpoint is verified against the live instance (see notes).
-        Returns (success, detail)."""
-        # TODO: wire the verified Indico registration endpoint here once confirmed.
-        return False, "registration API not configured yet"
-
-    @app_commands.command(name="myregistration", description="View or clear the registration details FurBot saved for you.")
-    async def myregistration(self, interaction: discord.Interaction) -> None:
-        prof = self._get_profile(interaction.user.id)
-        if not prof:
-            await interaction.response.send_message(
-                "I don't have any saved registration details for you yet. Mark *Interested* on an "
-                "event and tap **Register** to set them up.",
-                ephemeral=True,
-            )
-            return
-        lines = [f"**Email:** {prof.get('email', '—')}", f"**Name:** {prof.get('name', '—')}"]
-        regs = prof.get("registrations", {})
-        if regs:
-            lines.append("\n**Events you've registered through me:**")
-            for r in list(regs.values())[:10]:
-                lines.append(f"• {r.get('event', 'event')}")
-        await interaction.response.send_message(
-            "\n".join(lines), ephemeral=True, view=ForgetView(self, interaction.user.id)
-        )
-
     def _interest_cooldown_ok(self, user_id: int, se_id: int, kind: str, hours: int = 6) -> bool:
         key = (user_id, se_id, kind)
         now = time.time()
@@ -612,20 +500,12 @@ class Events(commands.Cog):
         starts = f"<t:{int(event.start_time.timestamp())}:R>" if event.start_time else "soon"
         text = (
             f"👋 Thanks for your interest in **{event.name}**!\n\n"
-            "Marking *Interested* here doesn't sign you up. Tap **Register** below and I'll take your "
-            "details (and remember them for next time), or register directly on the event page:\n"
+            "Marking *Interested* here doesn't sign you up. To register, head to the event page:\n"
             f"🔗 {url}\n\n"
             f"It starts {starts}. Hope to see you there! 🐾"
         )
-        view = discord.utils.MISSING
-        if self._s("events_dm_register_enabled"):
-            eid = self._indico_id_for(event.id) or ""
-            if eid.isdigit():
-                v = discord.ui.View(timeout=None)
-                v.add_item(RegisterButton(eid))
-                view = v
         try:
-            await user.send(text, view=view)
+            await user.send(text)
         except discord.HTTPException:
             pass
 
@@ -759,12 +639,13 @@ class Events(commands.Cog):
             if target:
                 present = {k: target.get(k) for k in _IMAGE_KEYS if target.get(k)}
                 m = _IMG_SRC_RE.search(target.get("description") or "")
-                resolved = await self._resolve_image(target, base)
-                data, dbg = await self._fetch_image(resolved)
+                cands = await self._resolve_image_candidates(target, base)
+                data, winner, dbg = await self._best_banner(target, base)
                 out += [
                     f"**Image fields:** {present or 'none'}",
                     f"**<img> in description:** {m.group(1) if m else 'none'}",
-                    f"**Resolved image URL:** {resolved or 'none'}",
+                    f"**Candidates tried:** {len(cands)}",
+                    f"**Banner source:** {winner or 'none'}",
                     f"**Download:** {'OK ' + str(len(data)) + ' bytes' if data else 'FAILED'} — `{dbg}`",
                 ]
         await interaction.followup.send("\n".join(out)[:1900], ephemeral=True)
