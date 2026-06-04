@@ -23,6 +23,7 @@ log = logging.getLogger("furbot.events")
 
 _IMAGE_KEYS = ("logo_url", "logoURL", "logo", "cover_url", "image_url")
 _TAG_RE = re.compile(r"<[^>]+>")
+_IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.I)
 
 
 def _strip_html(text: str | None, limit: int = 240) -> str:
@@ -52,11 +53,27 @@ def _event_epoch(date_obj: dict | None) -> int | None:
         return None
 
 
-def _first_url(event: dict) -> str | None:
+def _abs_url(url: str, base: str) -> str:
+    url = url.strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return base + url
+    return base + "/" + url
+
+
+def _event_image(event: dict, base: str) -> str | None:
+    """Find an image that lives on the event: a logo/cover field, or the first
+    image embedded in the event's description. Relative URLs are made absolute."""
     for k in _IMAGE_KEYS:
         v = event.get(k)
-        if isinstance(v, str) and v.startswith(("http://", "https://")):
-            return v
+        if isinstance(v, str) and v.strip():
+            return _abs_url(v, base)
+    m = _IMG_SRC_RE.search(event.get("description") or "")
+    if m:
+        return _abs_url(m.group(1), base)
     return None
 
 
@@ -117,9 +134,9 @@ class Events(commands.Cog):
             if desc:
                 embed.description = desc
 
-            img = _first_url(ev)
+            img = _event_image(ev, base)
             if img:
-                embed.set_image(url=img)
+                embed.set_thumbnail(url=img)  # shows on the side of the embed
             embeds.append(embed)
         return embeds
 
