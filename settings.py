@@ -43,6 +43,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "commission_watch_enabled":  (bool,  True,  "Warn + time out members who advertise art commissions within days of verifying (rules 5c/5d)."),
     "commission_watch_hours":    (int,   72,    "How long after verification a member is watched for commission soliciting."),
     "commission_timeout_hours":  (int,   24,    "Timeout length applied for new-member commission soliciting."),
+    "commission_threshold":      (float, 0.6,   "Classifier confidence (0-1) to flag commission soliciting. Higher = stricter/fewer flags."),
     "verify_thanks_enabled":     (bool,  True,  "Privately DM a varied thank-you the first time someone posts in the verify channel."),
     "verify_pending_enabled":    (bool,  True,  "Ping staff when someone who answered in the verify channel waits too long."),
     "verify_escalate_hours":     (int,   48,    "Hours after a verify-channel message before pinging staff to push them."),
