@@ -1212,7 +1212,8 @@ class Onboarding(commands.Cog, MemberActions):
             f"Your verification message was **{pct}% identical to another member's message**. "
             "Copying someone else's answers is treated as spam and is not allowed — verification "
             "requires your own, original introduction written in your own words.\n\n"
-            "If you genuinely want to join, you may rejoin and verify with a message you write yourself."
+            "If you genuinely want to join, you may rejoin and verify with a message you write yourself. "
+            "If you believe this was a genuine mistake, please reach out to us at **safety@nyfurs.org**."
         )
         # Auto-kick only — no moderator alert, as requested.
         ok = await self._kick(
