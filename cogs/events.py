@@ -307,9 +307,9 @@ class Events(commands.Cog):
             return None
 
     async def _resolve_image(self, ev: dict, base: str) -> str | None:
-        """Find a banner image: logo/cover field or topmost image in the
-        description. If none in the summary feed, fetch the full event detail
-        and scan its description's topmost image too."""
+        """Find a banner image: a logo/cover field, the topmost image in the
+        description (summary feed, then the fuller event detail), and finally the
+        event's conventional Indico logo URL."""
         img = _event_image(ev, base)
         if img:
             return img
@@ -317,8 +317,22 @@ class Events(commands.Cog):
         if eid:
             full = await self._fetch_event_detail(eid)
             if full:
-                return _event_image(full, base)
+                img = _event_image(full, base)
+                if img:
+                    return img
+            # Last resort: the event's logo endpoint (validated on download).
+            return f"{base}/event/{eid}/logo"
         return None
+
+    @staticmethod
+    def _looks_like_image(data: bytes) -> bool:
+        sig = data[:12]
+        return (
+            sig.startswith(b"\x89PNG")          # PNG
+            or sig.startswith(b"\xff\xd8\xff")  # JPEG
+            or sig[:4] in (b"GIF8",)            # GIF
+            or (sig[:4] == b"RIFF" and sig[8:12] == b"WEBP")  # WEBP
+        )
 
     async def _download_image(self, url: str | None) -> bytes | None:
         if not url:
@@ -330,18 +344,37 @@ class Events(commands.Cog):
             timeout = aiohttp.ClientTimeout(total=15)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers) as resp:
-                    if resp.status != 200 or "image" not in resp.headers.get("Content-Type", ""):
+                    if resp.status != 200:
                         return None
                     data = await resp.read()
-                    return data if 0 < len(data) <= 8 * 1024 * 1024 else None
+            if not (0 < len(data) <= 8 * 1024 * 1024):
+                return None
+            # Accept if it's a real image by signature (don't trust Content-Type alone).
+            return data if self._looks_like_image(data) else None
         except Exception:
             log.debug("Could not download event image %s", url, exc_info=True)
             return None
 
-    async def _sync_scheduled_events(self, guild: discord.Guild) -> tuple[int, int]:
-        """Create Discord scheduled events for upcoming Indico events not yet
-        posted. Returns (created, failed). Deduped via the EVENTS_POSTED map and
-        by matching existing event names."""
+    async def _ensure_banner(self, se: discord.ScheduledEvent | None, ev: dict, base: str) -> bool:
+        """If an existing scheduled event has no cover banner, try to add one."""
+        if se is None:
+            return False
+        if getattr(se, "cover_image", None) is not None or getattr(se, "image", None) is not None:
+            return False  # already has a banner
+        image = await self._download_image(await self._resolve_image(ev, base))
+        if not image:
+            return False
+        try:
+            await se.edit(image=image, reason="Backfill event banner from events.nyfurs.org")
+            return True
+        except discord.HTTPException:
+            log.exception("Failed to update banner for scheduled event %s", se.id)
+            return False
+
+    async def _sync_scheduled_events(self, guild: discord.Guild) -> tuple[int, int, int]:
+        """Create scheduled events for upcoming Indico events, and backfill a
+        banner on already-posted events that are missing one. Returns
+        (created, updated, failed)."""
         events = await self._fetch_events()
         posted = dict(self.store.get(EVENTS_POSTED, {}))
         base = self._base()
@@ -352,16 +385,25 @@ class Events(commands.Cog):
         except discord.HTTPException:
             existing = list(guild.scheduled_events)
         by_name = {se.name.lower(): se.id for se in existing}
+        by_id = {se.id: se for se in existing}
 
-        created = failed = 0
+        created = updated = failed = 0
         for ev in events:
             eid = str(ev.get("id") or "")
-            if not eid or eid in posted:
+            if not eid:
                 continue
             name = (ev.get("title") or "NYFurs Event")[:100]
             url = ev.get("url") or f"{base}/event/{eid}/"
+            if eid in posted:  # already posted — make sure it has a banner
+                info = posted[eid]
+                sid = info.get("se") if isinstance(info, dict) else info
+                if await self._ensure_banner(by_id.get(sid), ev, base):
+                    updated += 1
+                continue
             if name.lower() in by_name:  # someone already added it manually
                 posted[eid] = {"se": by_name[name.lower()], "url": url}
+                if await self._ensure_banner(by_id.get(by_name[name.lower()]), ev, base):
+                    updated += 1
                 continue
             start_epoch = _event_epoch(ev.get("startDate"))
             if not start_epoch:
@@ -399,7 +441,7 @@ class Events(commands.Cog):
                 failed += 1
 
         await self.store.set(EVENTS_POSTED, posted)
-        return created, failed
+        return created, updated, failed
 
     @tasks.loop(hours=6)
     async def sync_loop(self) -> None:
@@ -412,9 +454,9 @@ class Events(commands.Cog):
         if guild is None:
             return
         try:
-            created, failed = await self._sync_scheduled_events(guild)
-            if created:
-                log.info("Posted %d new scheduled event(s) from Indico", created)
+            created, updated, failed = await self._sync_scheduled_events(guild)
+            if created or updated:
+                log.info("Indico sync: %d new event(s), %d banner(s) backfilled", created, updated)
         except Exception:
             log.exception("Scheduled-events sync failed")
 
@@ -631,16 +673,19 @@ class Events(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         try:
-            created, failed = await self._sync_scheduled_events(guild)
+            created, updated, failed = await self._sync_scheduled_events(guild)
         except Exception as exc:
             log.exception("Manual event sync failed")
             await interaction.followup.send(f"Couldn't sync events. ({type(exc).__name__})", ephemeral=True)
             return
-        msg = f"✅ Posted **{created}** new event(s) to the server's Events page."
+        bits = []
+        if created:
+            bits.append(f"posted **{created}** new event(s)")
+        if updated:
+            bits.append(f"added banners to **{updated}** existing event(s)")
         if failed:
-            msg += f" **{failed}** failed — check that I have the **Manage Events** permission."
-        if not created and not failed:
-            msg = "Nothing new to post — the Events page is already up to date."
+            bits.append(f"**{failed}** failed (check my **Manage Events** permission)")
+        msg = ("✅ " + ", ".join(bits) + ".") if bits else "Nothing to do — the Events page is already up to date."
         await interaction.followup.send(msg, ephemeral=True)
 
     async def cog_app_command_error(
