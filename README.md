@@ -3,6 +3,8 @@
 A Discord bot for the **NYFurs** server and staff team, built with
 [discord.py](https://discordpy.readthedocs.io/).
 
+> 🎨 **Profile picture art by [@NyaswitchNya](https://x.com/NyaswitchNya).**
+
 ## What it does today
 
 - **Reaction verification** — in the verification channel, a staff member
