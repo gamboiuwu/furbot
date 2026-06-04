@@ -85,6 +85,8 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "events_interest_dm_enabled":(bool,  True,  "DM users a registration link when they mark Interested (or withdraw) on an event."),
     "events_reminder_enabled":   (bool,  True,  "DM interested users a reminder before an event starts."),
     "events_reminder_hours":     (int,   24,    "How many hours before an event to remind interested users."),
+    "events_dm_register_enabled":(bool,  True,  "Offer a 'Register' button in the Interested DM to collect/remember details."),
+    "events_register_submit_enabled": (bool, False, "Actually submit registrations to Indico (needs a verified registration endpoint)."),
     "hi_enabled":                (bool,  True,  "Occasionally post 'hi' in the welcome channel for fun."),
     "hi_per_week":               (int,   5,     "Roughly how many times a week the bot says hi."),
     "hi_channel_id":             (int,   0,     "Channel for the random hi (0 = use the welcome channel)."),

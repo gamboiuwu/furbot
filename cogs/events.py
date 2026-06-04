@@ -27,6 +27,74 @@ log = logging.getLogger("furbot.events")
 
 EVENTS_POSTED = "events_posted"      # {indico_event_id: {"se": scheduled_event_id, "url": event_url}}
 EVENTS_REMINDED = "events_reminded"  # [scheduled_event_id] already reminded (24h before)
+REG_PROFILES = "reg_profiles"        # {user_id: {email, name, updated_at, registrations: {eid: {...}}}}
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class RegistrationModal(discord.ui.Modal):
+    """Collects (and pre-fills from saved details) the info needed to register."""
+
+    def __init__(self, cog: "Events", eid: str, event_name: str, url: str, profile: dict | None) -> None:
+        super().__init__(title=f"Register: {event_name[:40]}")
+        self.cog = cog
+        self.eid = eid
+        self.event_name = event_name
+        self.url = url
+        prof = profile or {}
+        self.email = discord.ui.TextInput(
+            label="Email", placeholder="you@example.com",
+            default=prof.get("email"), required=True, max_length=200,
+        )
+        self.full_name = discord.ui.TextInput(
+            label="Full name", default=prof.get("name"), required=True, max_length=200,
+        )
+        self.add_item(self.email)
+        self.add_item(self.full_name)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        email = self.email.value.strip()
+        name = self.full_name.value.strip()
+        if not _EMAIL_RE.match(email):
+            await interaction.response.send_message(
+                "That email doesn't look right — tap the button and try again.", ephemeral=True
+            )
+            return
+        await self.cog._save_registration(interaction.user.id, email, name, self.eid, self.event_name, self.url)
+        msg = await self.cog._submit_or_link(interaction.user.id, self.eid, self.event_name, self.url, email, name)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+class RegisterView(discord.ui.View):
+    def __init__(self, cog: "Events", eid: str, event_name: str, url: str) -> None:
+        super().__init__(timeout=86400)
+        self.cog = cog
+        self.eid = eid
+        self.event_name = event_name
+        self.url = url
+
+    @discord.ui.button(label="Register / save my info", emoji="📝", style=discord.ButtonStyle.primary)
+    async def register(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        profile = self.cog._get_profile(interaction.user.id)
+        await interaction.response.send_modal(
+            RegistrationModal(self.cog, self.eid, self.event_name, self.url, profile)
+        )
+
+
+class ForgetView(discord.ui.View):
+    def __init__(self, cog: "Events", user_id: int) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+
+    @discord.ui.button(label="Forget my saved info", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def forget(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
+        await self.cog._forget_profile(self.user_id)
+        button.disabled = True
+        await interaction.response.edit_message(content="🗑️ Cleared your saved registration details.", view=self)
 
 _IMAGE_KEYS = ("logo_url", "logoURL", "logo", "cover_url", "image_url")
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -372,6 +440,77 @@ class Events(commands.Cog):
                 return f"{base}/event/{eid}/"
         return None
 
+    def _indico_id_for(self, se_id: int) -> str | None:
+        for eid, info in self.store.get(EVENTS_POSTED, {}).items():
+            sid = info.get("se") if isinstance(info, dict) else info
+            if sid == se_id:
+                return str(eid)
+        return None
+
+    # ---- registration details (remembered per user) --------------------
+
+    def _get_profile(self, user_id: int) -> dict | None:
+        return self.store.get(REG_PROFILES, {}).get(str(user_id))
+
+    async def _save_registration(self, user_id: int, email: str, name: str,
+                                 eid: str, event_name: str, url: str) -> None:
+        def mut(d: dict) -> None:
+            prof = d.setdefault(REG_PROFILES, {}).setdefault(str(user_id), {})
+            prof["email"] = email
+            prof["name"] = name
+            prof["updated_at"] = int(time.time())
+            regs = prof.setdefault("registrations", {})
+            regs[str(eid)] = {"event": event_name, "url": url, "at": int(time.time())}
+
+        await self.store.update(mut)
+
+    async def _forget_profile(self, user_id: int) -> None:
+        await self.store.update(lambda d: d.get(REG_PROFILES, {}).pop(str(user_id), None))
+
+    async def _submit_or_link(self, user_id: int, eid: str, event_name: str,
+                              url: str, email: str, name: str) -> str:
+        """Submit the registration to Indico if the API is verified+enabled;
+        otherwise save the details and hand back the link to finish on the site."""
+        if self._s("events_register_submit_enabled"):
+            ok, detail = await self._submit_to_indico(eid, email, name)
+            if ok:
+                return f"✅ You're registered for **{event_name}**! I've saved your details for next time. 🐾"
+            return (
+                f"⚠️ I saved your details, but couldn't auto-complete the registration ({detail}). "
+                f"Please finish it here: {url}"
+            )
+        return (
+            f"✅ Saved your details for **{event_name}** (I'll remember them next time).\n"
+            f"To finish registering, complete it here — your info is ready to paste in:\n🔗 {url}"
+        )
+
+    async def _submit_to_indico(self, eid: str, email: str, name: str) -> tuple[bool, str]:
+        """Placeholder for the real Indico registration POST. Disabled until the
+        registration endpoint is verified against the live instance (see notes).
+        Returns (success, detail)."""
+        # TODO: wire the verified Indico registration endpoint here once confirmed.
+        return False, "registration API not configured yet"
+
+    @app_commands.command(name="myregistration", description="View or clear the registration details FurBot saved for you.")
+    async def myregistration(self, interaction: discord.Interaction) -> None:
+        prof = self._get_profile(interaction.user.id)
+        if not prof:
+            await interaction.response.send_message(
+                "I don't have any saved registration details for you yet. Mark *Interested* on an "
+                "event and tap **Register** to set them up.",
+                ephemeral=True,
+            )
+            return
+        lines = [f"**Email:** {prof.get('email', '—')}", f"**Name:** {prof.get('name', '—')}"]
+        regs = prof.get("registrations", {})
+        if regs:
+            lines.append("\n**Events you've registered through me:**")
+            for r in list(regs.values())[:10]:
+                lines.append(f"• {r.get('event', 'event')}")
+        await interaction.response.send_message(
+            "\n".join(lines), ephemeral=True, view=ForgetView(self, interaction.user.id)
+        )
+
     def _interest_cooldown_ok(self, user_id: int, se_id: int, kind: str, hours: int = 6) -> bool:
         key = (user_id, se_id, kind)
         now = time.time()
@@ -390,13 +529,17 @@ class Events(commands.Cog):
         starts = f"<t:{int(event.start_time.timestamp())}:R>" if event.start_time else "soon"
         text = (
             f"👋 Thanks for your interest in **{event.name}**!\n\n"
-            "Quick heads-up: marking *Interested* here doesn't sign you up. To actually register — "
-            "and answer any registration questions the event may have — finish on the event page:\n"
+            "Marking *Interested* here doesn't sign you up. Tap **Register** below and I'll take your "
+            "details (and remember them for next time), or register directly on the event page:\n"
             f"🔗 {url}\n\n"
             f"It starts {starts}. Hope to see you there! 🐾"
         )
+        view = discord.utils.MISSING
+        if self._s("events_dm_register_enabled"):
+            eid = self._indico_id_for(event.id) or ""
+            view = RegisterView(self, eid, event.name, url)
         try:
-            await user.send(text)
+            await user.send(text, view=view)
         except discord.HTTPException:
             pass
 
