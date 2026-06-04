@@ -838,6 +838,41 @@ class Onboarding(commands.Cog, MemberActions):
                 await guild.chunk()
             except (discord.HTTPException, discord.ClientException):
                 log.exception("Failed to chunk guild members for sweep")
+        await self._backfill_copy_window()
+
+    async def _backfill_copy_window(self) -> None:
+        """On startup, pre-load the copy-detection window from the verification
+        channel's recent history, so copies of messages posted *before* the bot
+        (re)started are still caught — not only ones seen live. Replaces the
+        stored window with the channel's last `verify_copy_window` messages."""
+        if not self._s("verify_copy_kick_enabled"):
+            return
+        cid = self.config.verification_channel_id
+        channel = self.bot.get_channel(cid) if cid else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        window = self._s("verify_copy_window") or 500
+        min_chars = self._s("verify_copy_min_chars") or 40
+        entries: list[dict] = []
+        try:
+            async for msg in channel.history(limit=window):
+                if msg.author.bot:
+                    continue
+                norm = self._normalize_text(msg.content)
+                if len(norm) < min_chars:
+                    continue
+                entries.append(
+                    {"c": norm[:1000], "uid": msg.author.id, "t": int(msg.created_at.timestamp())}
+                )
+        except discord.Forbidden:
+            log.warning("Can't backfill copy window — missing Read Message History in the verify channel")
+            return
+        except discord.HTTPException:
+            log.exception("Failed to backfill copy-detection window")
+            return
+        entries.reverse()  # channel.history is newest-first; store chronologically
+        await self.store.set(VERIFY_RECENT, entries[-window:])
+        log.info("Backfilled copy-detection window from %d verification messages", len(entries))
 
     # ---- automated mode (no staff clicks) -------------------------------
 
