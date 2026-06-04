@@ -23,6 +23,10 @@ A Discord bot for the **NYFurs** server and staff team, built with
 - **`/help`** — lists everything the bot can do.
 - **`/floofcount`** — shows how many members have the Floofs role.
 - **`/ping`** — quick health check.
+- **Welcome Points** — when a member is verified, the first person to say
+  *welcome* to them earns a point (⭐ reaction; a one-time explainer DM). Only the
+  first welcome counts; every 50 points earns a no-ping shoutout. Check with
+  **`/welcomepoints`**.
 
 - **`/config view·set·reset`** — change bot settings from Discord; values are
   saved to your Nextcloud store and apply live (no redeploy).
