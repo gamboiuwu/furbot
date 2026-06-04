@@ -80,6 +80,8 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "indico_url":                (str,   "https://events.nyfurs.org", "Base URL of the Indico instance for /events."),
     "indico_category_id":        (int,   0,     "Indico category id to pull events from (0 = root category)."),
     "events_days":               (int,   30,    "How many days ahead /events looks for upcoming events."),
+    "events_sync_enabled":       (bool,  True,  "Auto-post upcoming Indico events to the server's Scheduled Events page."),
+    "events_sync_interval_hours":(int,   6,     "How often to sync events to the Scheduled Events page."),
     "hi_enabled":                (bool,  True,  "Occasionally post 'hi' in the welcome channel for fun."),
     "hi_per_week":               (int,   5,     "Roughly how many times a week the bot says hi."),
     "hi_channel_id":             (int,   0,     "Channel for the random hi (0 = use the welcome channel)."),

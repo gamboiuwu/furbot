@@ -17,9 +17,13 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
+
+from checks import NotStaff, is_staff
 
 log = logging.getLogger("furbot.events")
+
+EVENTS_POSTED = "events_posted"  # {indico_event_id: discord_scheduled_event_id}
 
 _IMAGE_KEYS = ("logo_url", "logoURL", "logo", "cover_url", "image_url")
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -81,10 +85,26 @@ class Events(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.config = bot.config
+        self.store = bot.store
         self.settings = bot.settings
+
+    async def cog_load(self) -> None:
+        self.sync_loop.start()
+
+    async def cog_unload(self) -> None:
+        self.sync_loop.cancel()
 
     def _s(self, key: str):
         return self.settings.get(key)
+
+    def _guild(self) -> discord.Guild | None:
+        gid = self.config.guild_id
+        if gid:
+            return self.bot.get_guild(gid)
+        return self.bot.guilds[0] if self.bot.guilds else None
+
+    def _base(self) -> str:
+        return (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
 
     async def _fetch_events(self) -> list[dict]:
         base = (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
@@ -175,11 +195,156 @@ class Events(commands.Cog):
             content += f" — showing {len(embeds)} of {len(events)}. More at {base}/"
         await interaction.followup.send(content=content, embeds=embeds)
 
+    # ---- sync to Discord's Scheduled Events page ------------------------
+
+    def _scheduled_description(self, ev: dict, url: str) -> str:
+        parts = []
+        desc = _strip_html(ev.get("description"), limit=500)
+        if desc:
+            parts.append(desc)
+        parts.append(f"🔗 Details & registration: {url}")
+        parts.append(
+            "⚠️ Note: marking yourself as \"Interested\" here does **not** register you for the "
+            "event. Please register at the link above."
+        )
+        return "\n\n".join(parts)[:1000]
+
+    async def _download_image(self, url: str | None) -> bytes | None:
+        if not url:
+            return None
+        headers = {"User-Agent": "FurBot/1.0 (+https://nyfurs.org)"}
+        if url.startswith(self._base()) and self.config.indico_api_token:
+            headers["Authorization"] = f"Bearer {self.config.indico_api_token}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200 or "image" not in resp.headers.get("Content-Type", ""):
+                        return None
+                    data = await resp.read()
+                    return data if 0 < len(data) <= 8 * 1024 * 1024 else None
+        except Exception:
+            log.debug("Could not download event image %s", url, exc_info=True)
+            return None
+
+    async def _sync_scheduled_events(self, guild: discord.Guild) -> tuple[int, int]:
+        """Create Discord scheduled events for upcoming Indico events not yet
+        posted. Returns (created, failed). Deduped via the EVENTS_POSTED map and
+        by matching existing event names."""
+        events = await self._fetch_events()
+        posted = dict(self.store.get(EVENTS_POSTED, {}))
+        base = self._base()
+        now = discord.utils.utcnow()
+
+        try:
+            existing = await guild.fetch_scheduled_events()
+        except discord.HTTPException:
+            existing = list(guild.scheduled_events)
+        by_name = {se.name.lower(): se.id for se in existing}
+
+        created = failed = 0
+        for ev in events:
+            eid = str(ev.get("id") or "")
+            if not eid or eid in posted:
+                continue
+            name = (ev.get("title") or "NYFurs Event")[:100]
+            if name.lower() in by_name:  # someone already added it manually
+                posted[eid] = by_name[name.lower()]
+                continue
+            start_epoch = _event_epoch(ev.get("startDate"))
+            if not start_epoch:
+                continue
+            start = datetime.datetime.fromtimestamp(start_epoch, tz=datetime.timezone.utc)
+            if start <= now:
+                continue  # Discord only allows scheduling future events
+            end_epoch = _event_epoch(ev.get("endDate"))
+            end = (datetime.datetime.fromtimestamp(end_epoch, tz=datetime.timezone.utc)
+                   if end_epoch and end_epoch > start_epoch else start + datetime.timedelta(hours=2))
+            url = ev.get("url") or f"{base}/event/{eid}/"
+            location = (ev.get("location") or "").strip()[:100] or "See registration link"
+            kwargs = dict(
+                name=name,
+                description=self._scheduled_description(ev, url),
+                start_time=start,
+                end_time=end,
+                entity_type=discord.EntityType.external,
+                privacy_level=discord.PrivacyLevel.guild_only,
+                location=location,
+                reason="Synced from events.nyfurs.org",
+            )
+            image = await self._download_image(_event_image(ev, base))
+            if image:
+                kwargs["image"] = image
+            try:
+                se = await guild.create_scheduled_event(**kwargs)
+                posted[eid] = se.id
+                created += 1
+            except discord.Forbidden:
+                log.warning("Missing Manage Events permission — cannot create scheduled events")
+                failed += 1
+                break
+            except discord.HTTPException:
+                log.exception("Failed to create scheduled event for Indico event %s", eid)
+                failed += 1
+
+        await self.store.set(EVENTS_POSTED, posted)
+        return created, failed
+
+    @tasks.loop(hours=6)
+    async def sync_loop(self) -> None:
+        interval = max(1, self._s("events_sync_interval_hours") or 6)
+        if self.sync_loop.hours != interval:
+            self.sync_loop.change_interval(hours=interval)
+        if not self._s("events_sync_enabled") or not self.config.indico_api_token:
+            return
+        guild = self._guild()
+        if guild is None:
+            return
+        try:
+            created, failed = await self._sync_scheduled_events(guild)
+            if created:
+                log.info("Posted %d new scheduled event(s) from Indico", created)
+        except Exception:
+            log.exception("Scheduled-events sync failed")
+
+    @sync_loop.before_loop
+    async def _before_sync(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="syncevents", description="(Staff) Post upcoming events to the server's Events page.")
+    @is_staff()
+    async def syncevents(self, interaction: discord.Interaction) -> None:
+        if not self.config.indico_api_token:
+            await interaction.response.send_message(
+                "⚠️ `INDICO_API_TOKEN` isn't set, so I can't fetch events.", ephemeral=True
+            )
+            return
+        guild = interaction.guild or self._guild()
+        if guild is None:
+            await interaction.response.send_message("No server available.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            created, failed = await self._sync_scheduled_events(guild)
+        except Exception as exc:
+            log.exception("Manual event sync failed")
+            await interaction.followup.send(f"Couldn't sync events. ({type(exc).__name__})", ephemeral=True)
+            return
+        msg = f"✅ Posted **{created}** new event(s) to the server's Events page."
+        if failed:
+            msg += f" **{failed}** failed — check that I have the **Manage Events** permission."
+        if not created and not failed:
+            msg = "Nothing new to post — the Events page is already up to date."
+        await interaction.followup.send(msg, ephemeral=True)
+
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
-        log.exception("Events command error", exc_info=error)
-        msg = "Something went wrong fetching events."
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
+        else:
+            log.exception("Events command error", exc_info=error)
+            msg = "Something went wrong with that command."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
