@@ -22,6 +22,7 @@ All buttons are persistent across restarts:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import difflib
 import io
 import logging
@@ -49,6 +50,31 @@ VERIFY_MESSAGES = "verify_messages"   # {user_id: [{"c": content, "t": epoch}, .
 VERIFY_RECENT = "verify_recent"       # [{"c": normalized_text, "uid": author_id, "t": epoch}] rolling window
 VERIFY_THANKED = "verify_thanked"     # {user_id: epoch} — first-time posters already whispered a thanks
 VERIFY_COPY_OFFENSES = "verify_copy_offenses"  # {user_id: count} — copy-paste strikes (persists across rejoins)
+COMMISSION_OFFENSES = "commission_offenses"    # {user_id: count} — new-member commission-soliciting strikes
+
+# Conservative commission-solicitation detection (rules 5c/5d/3d). Designed to
+# avoid false positives: declarative selling phrases, or a "DM me"-type hook
+# combined with BOTH an art context and a payment/price context.
+_COMMISSION_STRONG = (
+    "commissions are open", "commissions open", "commission's open", "comms open",
+    "comms are open", "open for commissions", "open for comms", "open for comm",
+    "taking commissions", "taking comms", "accepting commissions", "accepting comms",
+    "selling commissions", "commission slots", "comm slots", "commissions available",
+    "comms available", "art for sale", "buy my art", "commission me",
+    "dm me for comms", "dm me for commissions", "dm for commissions", "dm for comms",
+    "ych auction", "ych open", "ko-fi commissions",
+)
+_COMMISSION_SOLICIT = ("dm me", "dms open", "dm's open", "message me", "pm me", "hmu",
+                       "hit me up", "inbox me", "msg me")
+_COMMISSION_ART = ("commission", "comms", "comm ", "sketch", "ych", "ref sheet",
+                   "reference sheet", "headshot", "fullbody", "full body", "chibi",
+                   "drawing", "art ", " art", "telegram sticker")
+_COMMISSION_PAY = ("$", "usd", "paypal", "ko-fi", "kofi", "venmo", "cashapp", "cash app",
+                   "throne", "price", "per character", "/character", "starting at", "€", "£")
+# If it reads like a question about the rules, it's asking — not advertising.
+_COMMISSION_QUESTION = ("allow", "can i", "could i", "am i", "is it", "are we", "are comm",
+                        "do you allow", "permit", "rule", "ok to", "okay to", "able to",
+                        "is this", "where can", "what about", "is there a")
 BLOCKED_CALLOUT = "blocked_callout"   # {mod_id: last_called_epoch} (cooldown for the call-out)
 
 STAFF_ONLY = "🔒 This action is for staff only."
@@ -209,6 +235,7 @@ class Onboarding(commands.Cog, MemberActions):
         self.store = bot.store
         self.settings = bot.settings
         self._copy_kicked: set[int] = set()  # de-dupe copy kicks across rapid multi-message pastes
+        self._commission_recent: dict[int, float] = {}  # de-dupe commission flags (burst guard)
 
     async def cog_load(self) -> None:
         self.sweep.start()
@@ -1067,14 +1094,18 @@ class Onboarding(commands.Cog, MemberActions):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Verification-channel handling: anti-copy spam check, then track
-        unverified members so we can ping staff if they're left waiting."""
+        """Verification-channel handling, plus a server-wide commission-soliciting
+        watch for members verified within the last few days."""
         if message.author.bot:
-            return
-        if message.channel.id != self.config.verification_channel_id:
             return
         member = message.author
         if not isinstance(member, discord.Member):
+            return
+
+        # Watch for newly-verified members advertising commissions (any channel).
+        await self._handle_commission_watch(message, member)
+
+        if message.channel.id != self.config.verification_channel_id:
             return
         role = self._floofs_role(member.guild)
         verified = role is not None and role in member.roles
@@ -1118,6 +1149,114 @@ class Onboarding(commands.Cog, MemberActions):
                 del msgs[:-5]  # keep the latest 5
 
         await self.store.update(mut)
+
+    # ---- new-member commission soliciting -------------------------------
+
+    @staticmethod
+    def _looks_like_commission_ad(text: str) -> bool:
+        """Conservative check for advertising/soliciting commissions. Returns
+        True only on declarative selling phrases, or a 'DM me'-type hook together
+        with BOTH an art context and a payment/price context. Questions about the
+        rules are never flagged."""
+        low = text.lower()
+        if "?" in low and any(q in low for q in _COMMISSION_QUESTION):
+            return False  # they're asking, not advertising
+        if any(p in low for p in _COMMISSION_STRONG):
+            return True
+        if (any(s in low for s in _COMMISSION_SOLICIT)
+                and any(a in low for a in _COMMISSION_ART)
+                and any(p in low for p in _COMMISSION_PAY)):
+            return True
+        return False
+
+    async def _handle_commission_watch(self, message: discord.Message, member: discord.Member) -> None:
+        """If a member verified within the last `commission_watch_hours` is
+        advertising/soliciting commissions (rules 5c/5d/3d), warn them, time them
+        out, and flag a moderator. This is strike one."""
+        if not self._s("commission_watch_enabled") or self._is_staff(member):
+            return
+        rec = self.store.get(VERIFICATIONS, {}).get(str(member.id))
+        if not rec or not rec.get("at"):
+            return  # not a tracked-verified member
+        window_h = self._s("commission_watch_hours") or 72
+        if time.time() - rec["at"] > window_h * 3600:
+            return  # past the new-member window
+        if not message.content or not self._looks_like_commission_ad(message.content):
+            return
+        # De-dupe: already muted, or flagged moments ago (rapid multi-message).
+        if member.is_timed_out():
+            return
+        now = time.monotonic()
+        if now - self._commission_recent.get(member.id, 0) < 60:
+            return
+        self._commission_recent[member.id] = now
+
+        uid = str(member.id)
+        strike = self.store.get(COMMISSION_OFFENSES, {}).get(uid, 0) + 1
+        await self.store.update(
+            lambda d: d.setdefault(COMMISSION_OFFENSES, {}).__setitem__(uid, strike)
+        )
+
+        hours = self._s("commission_timeout_hours") or 24
+        timed_out = False
+        try:
+            await member.timeout(
+                datetime.timedelta(hours=hours),
+                reason="Soliciting commissions as a new member (rules 5c/5d)",
+            )
+            timed_out = True
+        except discord.Forbidden:
+            await self._log_action(
+                f"⚠️ Tried to time out **{member.display_name}** for commission soliciting but I'm "
+                "missing the **Moderate Members** permission."
+            )
+        except discord.HTTPException:
+            log.exception("Failed to time out %s for commission soliciting", member)
+
+        for emoji in ("⚠️", "💸"):
+            try:
+                await message.add_reaction(emoji)
+            except discord.HTTPException:
+                pass
+
+        dm = (
+            f"⚠️ Hi {member.display_name} — a heads-up about the **{member.guild.name}** rules.\n\n"
+            "Advertising or soliciting **art commissions** (or other sales/promotions) without staff "
+            "approval isn't allowed — and especially not for brand-new members. See rules **5c** and "
+            "**5d** here: https://nyfurs.org/online-rules/\n\n"
+            f"Because your account was verified very recently, this has been flagged and you've been given "
+            f"a temporary **{hours}-hour timeout** while a moderator reviews it. This is a **first warning** — "
+            "please hold off on any commission or sales posts, and ask a moderator first if you'd like to "
+            "advertise something.\n\n"
+            "If you believe this was a mistake, you can appeal at **staff@nyfurs.org**."
+        )
+        await self._try_dm(member, dm)
+        await self._flag_commission(message, member, strike, timed_out, hours, rec.get("at"))
+
+    async def _flag_commission(
+        self, message: discord.Message, member: discord.Member, strike: int,
+        timed_out: bool, hours: int, verified_at: float | None,
+    ) -> None:
+        """Send the commission-soliciting flag to the staff log channel."""
+        log_id = self.config.log_channel_id
+        channel = self.bot.get_channel(log_id) if log_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        ping = f"<@&{self.config.staff_role_id}> " if self.config.staff_role_id else ""
+        status = f"timed out for {hours}h" if timed_out else "**NOT** timed out (I'm missing Moderate Members)"
+        when = f" (verified <t:{int(verified_at)}:R>)" if verified_at else ""
+        snippet = (message.content or "").replace("\n", " ")[:600]
+        chan = getattr(message.channel, "mention", "#?")
+        text = (
+            f"{ping}💸 **Possible commission soliciting by a new member** — **{member}** (`{member.id}`)"
+            f"{when} appears to be advertising/soliciting commissions, which isn't allowed without staff "
+            f"approval (rules 5c/5d). They've been warned and {status}. **Strike {strike}.**\n"
+            f"In {chan}: {message.jump_url}\n> {snippet or '(no text)'}"
+        )
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions(roles=bool(ping)))
+        except discord.HTTPException:
+            log.exception("Failed to post commission flag")
 
     # ---- anti-copy spam --------------------------------------------------
 

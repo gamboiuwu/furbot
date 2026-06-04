@@ -108,6 +108,9 @@ class Config:
     birthday_promo_days: int | None
     birthday_promo_message: str | None
     leaderboard_channel_id: int | None
+    commission_watch_enabled: bool | None
+    commission_watch_hours: int | None
+    commission_timeout_hours: int | None
     verify_thanks_enabled: bool | None
     verify_pending_enabled: bool | None
     verify_escalate_hours: int | None
@@ -209,6 +212,9 @@ class Config:
             birthday_promo_days=_get_int("BIRTHDAY_PROMO_DAYS"),
             birthday_promo_message=os.getenv("BIRTHDAY_PROMO_MESSAGE", "").strip() or None,
             leaderboard_channel_id=_get_int("LEADERBOARD_CHANNEL_ID"),
+            commission_watch_enabled=_get_bool("COMMISSION_WATCH_ENABLED"),
+            commission_watch_hours=_get_int("COMMISSION_WATCH_HOURS"),
+            commission_timeout_hours=_get_int("COMMISSION_TIMEOUT_HOURS"),
             verify_thanks_enabled=_get_bool("VERIFY_THANKS_ENABLED"),
             verify_pending_enabled=_get_bool("VERIFY_PENDING_ENABLED"),
             verify_escalate_hours=_get_int("VERIFY_ESCALATE_HOURS"),
