@@ -289,3 +289,28 @@ class MemberActions:
             f"👢 **{member.display_name}** was removed by **{by.display_name}** (unverified)."
         )
         return True
+
+    async def _ban(
+        self, member: discord.Member, *, by: discord.Member, reason: str, dm_text: str
+    ) -> bool:
+        """DM the member (best-effort) then permanently ban them. Returns True on success."""
+        guild = member.guild
+        await self._try_dm(member, dm_text)  # DM first — after the ban we lose the shared guild
+        try:
+            await guild.ban(member, reason=reason, delete_message_seconds=0)
+        except discord.Forbidden:
+            log.warning("Missing Ban Members permission — cannot ban %s", member)
+            await self._log_action(
+                f"⚠️ Tried to permanently ban **{member.display_name}** but I'm missing the "
+                "**Ban Members** permission. Please grant it to my role."
+            )
+            return False
+        except discord.HTTPException:
+            log.exception("Failed to ban %s", member)
+            return False
+        log.info("Banned %s (by %s): %s", member, by, reason)
+        await self._record("banned", member, by)
+        await self._log_action(
+            f"🔨 **{member.display_name}** was **permanently banned** by **{by.display_name}** ({reason})."
+        )
+        return True
