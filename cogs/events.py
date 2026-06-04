@@ -36,7 +36,7 @@ class RegistrationModal(discord.ui.Modal):
     """Collects (and pre-fills from saved details) the info needed to register."""
 
     def __init__(self, cog: "Events", eid: str, event_name: str, url: str, profile: dict | None) -> None:
-        super().__init__(title=f"Register: {event_name[:40]}")
+        super().__init__(title=("Register: " + event_name)[:45])  # Discord caps titles at 45 chars
         self.cog = cog
         self.eid = eid
         self.event_name = event_name
@@ -65,20 +65,29 @@ class RegistrationModal(discord.ui.Modal):
         await interaction.response.send_message(msg, ephemeral=True)
 
 
-class RegisterView(discord.ui.View):
-    def __init__(self, cog: "Events", eid: str, event_name: str, url: str) -> None:
-        super().__init__(timeout=86400)
-        self.cog = cog
-        self.eid = eid
-        self.event_name = event_name
-        self.url = url
+class RegisterButton(discord.ui.DynamicItem[discord.ui.Button], template=r"reg:v1:(?P<eid>\d+)"):
+    """Persistent 'Register' button shown on the Interested DM (survives restarts;
+    the event id is encoded in the custom_id and looked up in the store)."""
 
-    @discord.ui.button(label="Register / save my info", emoji="📝", style=discord.ButtonStyle.primary)
-    async def register(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        profile = self.cog._get_profile(interaction.user.id)
-        await interaction.response.send_modal(
-            RegistrationModal(self.cog, self.eid, self.event_name, self.url, profile)
+    def __init__(self, eid: str) -> None:
+        self.eid = str(eid)
+        super().__init__(
+            discord.ui.Button(
+                label="Register / save my info", emoji="📝",
+                style=discord.ButtonStyle.primary, custom_id=f"reg:v1:{eid}",
+            )
         )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match["eid"])
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog: "Events | None" = interaction.client.get_cog("Events")
+        if cog is None:
+            await interaction.response.send_message("This isn't available right now.", ephemeral=True)
+            return
+        await cog.open_registration_modal(interaction, self.eid)
 
 
 class ForgetView(discord.ui.View):
@@ -401,7 +410,7 @@ class Events(commands.Cog):
                     updated += 1
                 continue
             if name.lower() in by_name:  # someone already added it manually
-                posted[eid] = {"se": by_name[name.lower()], "url": url}
+                posted[eid] = {"se": by_name[name.lower()], "url": url, "name": name}
                 if await self._ensure_banner(by_id.get(by_name[name.lower()]), ev, base):
                     updated += 1
                 continue
@@ -430,7 +439,7 @@ class Events(commands.Cog):
                 kwargs["image"] = image
             try:
                 se = await guild.create_scheduled_event(**kwargs)
-                posted[eid] = {"se": se.id, "url": url}
+                posted[eid] = {"se": se.id, "url": url, "name": name}
                 created += 1
             except discord.Forbidden:
                 log.warning("Missing Manage Events permission — cannot create scheduled events")
@@ -493,6 +502,21 @@ class Events(commands.Cog):
 
     def _get_profile(self, user_id: int) -> dict | None:
         return self.store.get(REG_PROFILES, {}).get(str(user_id))
+
+    async def open_registration_modal(self, interaction: discord.Interaction, eid: str) -> None:
+        info = self.store.get(EVENTS_POSTED, {}).get(str(eid))
+        name = (info.get("name") if isinstance(info, dict) else None) or "this event"
+        url = (info.get("url") if isinstance(info, dict) else None) or f"{self._base()}/event/{eid}/"
+        try:
+            await interaction.response.send_modal(
+                RegistrationModal(self, str(eid), name, url, self._get_profile(interaction.user.id))
+            )
+        except discord.HTTPException:
+            log.exception("Failed to open registration modal for event %s", eid)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Couldn't open the registration form — please try again in a moment.", ephemeral=True
+                )
 
     async def _save_registration(self, user_id: int, email: str, name: str,
                                  eid: str, event_name: str, url: str) -> None:
@@ -579,7 +603,10 @@ class Events(commands.Cog):
         view = discord.utils.MISSING
         if self._s("events_dm_register_enabled"):
             eid = self._indico_id_for(event.id) or ""
-            view = RegisterView(self, eid, event.name, url)
+            if eid.isdigit():
+                v = discord.ui.View(timeout=None)
+                v.add_item(RegisterButton(eid))
+                view = v
         try:
             await user.send(text, view=view)
         except discord.HTTPException:
@@ -687,6 +714,43 @@ class Events(commands.Cog):
             bits.append(f"**{failed}** failed (check my **Manage Events** permission)")
         msg = ("✅ " + ", ".join(bits) + ".") if bits else "Nothing to do — the Events page is already up to date."
         await interaction.followup.send(msg, ephemeral=True)
+
+    @app_commands.command(name="eventsdebug", description="(Staff) Diagnose the events feed and banner sync.")
+    @app_commands.describe(event_id="An Indico event id to inspect (e.g. 93).")
+    @is_staff()
+    async def eventsdebug(self, interaction: discord.Interaction, event_id: str | None = None) -> None:
+        await interaction.response.defer(ephemeral=True)
+        base = self._base()
+        out = [
+            f"**Base:** {base}",
+            f"**Category:** `{self._s('indico_category_id')}` · **Days:** {self._s('events_days')}",
+            f"**Token set:** {bool(self.config.indico_api_token)}",
+        ]
+        try:
+            evs = await self._fetch_events()
+            sample = ", ".join(f"{e.get('id')}:{(e.get('title') or '')[:18]}" for e in evs[:8])
+            out.append(f"**Feed returned:** {len(evs)} event(s){' — ' + sample if sample else ''}")
+        except Exception as exc:
+            out.append(f"**Feed error:** {type(exc).__name__}: {exc}")
+            evs = []
+
+        if event_id:
+            target = next((e for e in evs if str(e.get("id")) == str(event_id)), None)
+            if target is None:
+                target = await self._fetch_event_detail(event_id)
+                out.append(f"Event {event_id} not in feed window — fetched detail directly: {'ok' if target else 'FAILED'}")
+            if target:
+                present = {k: target.get(k) for k in _IMAGE_KEYS if target.get(k)}
+                m = _IMG_SRC_RE.search(target.get("description") or "")
+                resolved = await self._resolve_image(target, base)
+                data = await self._download_image(resolved)
+                out += [
+                    f"**Image fields:** {present or 'none'}",
+                    f"**<img> in description:** {m.group(1) if m else 'none'}",
+                    f"**Resolved image URL:** {resolved or 'none'}",
+                    f"**Download:** {'OK ' + str(len(data)) + ' bytes' if data else 'FAILED (non-200 or not a valid image)'}",
+                ]
+        await interaction.followup.send("\n".join(out)[:1900], ephemeral=True)
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
