@@ -33,6 +33,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import commission
 import messages
 from checks import NotStaff, is_staff
 from risk import RISK_PENDING
@@ -51,30 +52,6 @@ VERIFY_RECENT = "verify_recent"       # [{"c": normalized_text, "uid": author_id
 VERIFY_THANKED = "verify_thanked"     # {user_id: epoch} — first-time posters already whispered a thanks
 VERIFY_COPY_OFFENSES = "verify_copy_offenses"  # {user_id: count} — copy-paste strikes (persists across rejoins)
 COMMISSION_OFFENSES = "commission_offenses"    # {user_id: count} — new-member commission-soliciting strikes
-
-# Conservative commission-solicitation detection (rules 5c/5d/3d). Designed to
-# avoid false positives: declarative selling phrases, or a "DM me"-type hook
-# combined with BOTH an art context and a payment/price context.
-_COMMISSION_STRONG = (
-    "commissions are open", "commissions open", "commission's open", "comms open",
-    "comms are open", "open for commissions", "open for comms", "open for comm",
-    "taking commissions", "taking comms", "accepting commissions", "accepting comms",
-    "selling commissions", "commission slots", "comm slots", "commissions available",
-    "comms available", "art for sale", "buy my art", "commission me",
-    "dm me for comms", "dm me for commissions", "dm for commissions", "dm for comms",
-    "ych auction", "ych open", "ko-fi commissions",
-)
-_COMMISSION_SOLICIT = ("dm me", "dms open", "dm's open", "message me", "pm me", "hmu",
-                       "hit me up", "inbox me", "msg me")
-_COMMISSION_ART = ("commission", "comms", "comm ", "sketch", "ych", "ref sheet",
-                   "reference sheet", "headshot", "fullbody", "full body", "chibi",
-                   "drawing", "art ", " art", "telegram sticker")
-_COMMISSION_PAY = ("$", "usd", "paypal", "ko-fi", "kofi", "venmo", "cashapp", "cash app",
-                   "throne", "price", "per character", "/character", "starting at", "€", "£")
-# If it reads like a question about the rules, it's asking — not advertising.
-_COMMISSION_QUESTION = ("allow", "can i", "could i", "am i", "is it", "are we", "are comm",
-                        "do you allow", "permit", "rule", "ok to", "okay to", "able to",
-                        "is this", "where can", "what about", "is there a")
 BLOCKED_CALLOUT = "blocked_callout"   # {mod_id: last_called_epoch} (cooldown for the call-out)
 
 STAFF_ONLY = "🔒 This action is for staff only."
@@ -238,6 +215,7 @@ class Onboarding(commands.Cog, MemberActions):
         self._commission_recent: dict[int, float] = {}  # de-dupe commission flags (burst guard)
 
     async def cog_load(self) -> None:
+        commission.warmup()  # train the tiny commission classifier once (~0.2s)
         self.sweep.start()
         self.auto_loop.start()
         self.verify_pending_loop.start()
@@ -1152,23 +1130,6 @@ class Onboarding(commands.Cog, MemberActions):
 
     # ---- new-member commission soliciting -------------------------------
 
-    @staticmethod
-    def _looks_like_commission_ad(text: str) -> bool:
-        """Conservative check for advertising/soliciting commissions. Returns
-        True only on declarative selling phrases, or a 'DM me'-type hook together
-        with BOTH an art context and a payment/price context. Questions about the
-        rules are never flagged."""
-        low = text.lower()
-        if "?" in low and any(q in low for q in _COMMISSION_QUESTION):
-            return False  # they're asking, not advertising
-        if any(p in low for p in _COMMISSION_STRONG):
-            return True
-        if (any(s in low for s in _COMMISSION_SOLICIT)
-                and any(a in low for a in _COMMISSION_ART)
-                and any(p in low for p in _COMMISSION_PAY)):
-            return True
-        return False
-
     async def _handle_commission_watch(self, message: discord.Message, member: discord.Member) -> None:
         """If a member verified within the last `commission_watch_hours` is
         advertising/soliciting commissions (rules 5c/5d/3d), warn them, time them
@@ -1181,7 +1142,8 @@ class Onboarding(commands.Cog, MemberActions):
         window_h = self._s("commission_watch_hours") or 72
         if time.time() - rec["at"] > window_h * 3600:
             return  # past the new-member window
-        if not message.content or not self._looks_like_commission_ad(message.content):
+        threshold = self._s("commission_threshold") or 0.6
+        if not message.content or not commission.is_commission_ad(message.content, threshold):
             return
         # De-dupe: already muted, or flagged moments ago (rapid multi-message).
         if member.is_timed_out():

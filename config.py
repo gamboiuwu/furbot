@@ -111,6 +111,7 @@ class Config:
     commission_watch_enabled: bool | None
     commission_watch_hours: int | None
     commission_timeout_hours: int | None
+    commission_threshold: float | None
     verify_thanks_enabled: bool | None
     verify_pending_enabled: bool | None
     verify_escalate_hours: int | None
@@ -215,6 +216,7 @@ class Config:
             commission_watch_enabled=_get_bool("COMMISSION_WATCH_ENABLED"),
             commission_watch_hours=_get_int("COMMISSION_WATCH_HOURS"),
             commission_timeout_hours=_get_int("COMMISSION_TIMEOUT_HOURS"),
+            commission_threshold=_get_float("COMMISSION_THRESHOLD"),
             verify_thanks_enabled=_get_bool("VERIFY_THANKS_ENABLED"),
             verify_pending_enabled=_get_bool("VERIFY_PENDING_ENABLED"),
             verify_escalate_hours=_get_int("VERIFY_ESCALATE_HOURS"),
