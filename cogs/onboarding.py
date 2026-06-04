@@ -1041,13 +1041,26 @@ class Onboarding(commands.Cog, MemberActions):
         if not isinstance(member, discord.Member):
             return
         role = self._floofs_role(member.guild)
-        if role is not None and role in member.roles:
-            return  # already verified — ignore everything below
+        verified = role is not None and role in member.roles
 
-        # Anti-copy: members who paste someone else's verification answer fail
-        # verification and are removed. If we kicked them, stop here.
-        if await self._handle_possible_copy(message, member):
-            return
+        norm = self._normalize_text(message.content)
+        min_chars = self._s("verify_copy_min_chars") or 40
+        long_enough = len(norm) >= min_chars
+
+        # Anti-copy: only unverified, non-staff members are ever kicked. (Staff
+        # and verified members are never kicked, but their messages are still
+        # remembered below so they can serve as the "original" someone copies.)
+        if (long_enough and not verified and not self._is_staff(member)
+                and self._s("verify_copy_kick_enabled")
+                and await self._handle_possible_copy(member, norm)):
+            return  # they were kicked
+
+        # Remember this message so anyone's post can be a future "original".
+        if long_enough:
+            await self._remember_verify_message(member.id, norm)
+
+        if verified:
+            return  # nothing else to do for verified members
 
         # A varied, private thank-you on their first (non-flagged) post.
         await self._maybe_thank_first_post(member)
@@ -1106,24 +1119,28 @@ class Onboarding(commands.Cog, MemberActions):
         await self._try_dm(member, text)  # whisper only — never posted in the channel
         await _mark()
 
-    async def _handle_possible_copy(self, message: discord.Message, member: discord.Member) -> bool:
-        """If `message` is at least `verify_copy_similarity` similar to another
-        member's recent verification message, the copier fails verification and
-        is auto-kicked with a firm DM. No mod alert is sent. Returns True if we
-        kicked them.
-
-        False-positive guards: compared only against a *different* author, only
-        messages of meaningful length, and never staff. Everyone here writes
-        their own answers, so a near-identical long message is copy-paste spam."""
-        if not self._s("verify_copy_kick_enabled") or self._is_staff(member):
-            return False
-        norm = self._normalize_text(message.content)
-        min_chars = self._s("verify_copy_min_chars") or 40
-        if len(norm) < min_chars:
-            return False  # too short to be a confident copy (e.g. a one-line rule)
-
-        threshold = float(self._s("verify_copy_similarity") or 0.9)
+    async def _remember_verify_message(self, user_id: int, norm: str) -> None:
+        """Add a normalized verification message to the rolling copy-detection
+        window. Recorded for everyone (staff/verified included) so any post can
+        be the 'original' a later copier is matched against."""
         window = self._s("verify_copy_window") or 500
+
+        def remember(d: dict) -> None:
+            lst = d.setdefault(VERIFY_RECENT, [])
+            lst.append({"c": norm[:1000], "uid": user_id, "t": int(time.time())})
+            if len(lst) > window:
+                del lst[: len(lst) - window]
+
+        await self.store.update(remember)
+
+    async def _handle_possible_copy(self, member: discord.Member, norm: str) -> bool:
+        """If `norm` (the member's normalized message) is at least
+        `verify_copy_similarity` similar to a *different* member's remembered
+        message, the copier fails verification and is auto-kicked with a firm DM.
+        No mod alert is sent. Returns True if we kicked them. Callers gate this
+        to unverified, non-staff members of meaningful length."""
+        threshold = float(self._s("verify_copy_similarity") or 0.9)
+        min_chars = self._s("verify_copy_min_chars") or 40
         recent = self.store.get(VERIFY_RECENT, [])
 
         # Find the most similar earlier message from a *different* author. difflib's
@@ -1146,15 +1163,6 @@ class Onboarding(commands.Cog, MemberActions):
                 best = ratio
                 if best >= 1.0:
                     break
-
-        # Always remember this message for future comparisons (cap the window).
-        def remember(d: dict) -> None:
-            lst = d.setdefault(VERIFY_RECENT, [])
-            lst.append({"c": norm[:1000], "uid": member.id, "t": int(time.time())})
-            if len(lst) > window:
-                del lst[: len(lst) - window]
-
-        await self.store.update(remember)
 
         if best < threshold:
             return False
