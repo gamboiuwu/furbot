@@ -20,19 +20,31 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from store import JsonStore
+import messages
+from checks import NotStaff, is_staff
+from verification_actions import MemberActions
 
 log = logging.getLogger("furbot.verification")
 
-# Key in the store holding pending unbans: {"guild_id:user_id": unban_at_epoch}.
-PENDING_UNBANS = "pending_unbans"
+# Key in the shared store for the temp-ban cooldown list.
+PENDING_UNBANS = "pending_unbans"  # {"guild_id:user_id": unban_at_epoch}
+
+# Keyword fallback (for when buttons/reactions don't cooperate, e.g. mobile).
+# A staff member replies to (or @mentions) the person with one of these words.
+KEYWORD_ACTIONS = {
+    "verify": "approve", "verified": "approve", "approve": "approve",
+    "approved": "approve", "accept": "approve", "accepted": "approve",
+    "reject": "reject", "rejected": "reject", "deny": "reject", "denied": "reject",
+    "warn": "warn", "redo": "warn", "moreinfo": "warn", "more info": "warn",
+}
 
 
-class Verification(commands.Cog):
+class Verification(commands.Cog, MemberActions):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.config = bot.config
-        self.store = JsonStore(f"{self.config.data_dir}/verification.json")
+        self.store = bot.store
+        self.settings = bot.settings
 
     async def cog_load(self) -> None:
         self.process_unbans.start()
@@ -41,14 +53,6 @@ class Verification(commands.Cog):
         self.process_unbans.cancel()
 
     # ---- helpers ---------------------------------------------------------
-
-    def _is_staff(self, member: discord.Member) -> bool:
-        """A member is staff if they have the configured staff role, or
-        (failing that) the Manage Roles permission."""
-        if self.config.staff_role_id:
-            if any(r.id == self.config.staff_role_id for r in member.roles):
-                return True
-        return member.guild_permissions.manage_roles
 
     @staticmethod
     def _emoji_matches(emoji: discord.PartialEmoji | discord.Emoji | str, target: str) -> bool:
@@ -59,60 +63,26 @@ class Verification(commands.Cog):
         name = getattr(emoji, "name", None)
         return name is not None and name == target.strip(":")
 
-    async def _log_action(self, message: str) -> None:
-        if not self.config.log_channel_id:
-            return
-        channel = self.bot.get_channel(self.config.log_channel_id)
-        if isinstance(channel, discord.TextChannel):
-            try:
-                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
-            except discord.HTTPException:
-                log.exception("Failed to write to log channel")
-
-    @staticmethod
-    async def _try_dm(member: discord.abc.User, content: str) -> None:
-        """DM a member, ignoring failures (closed DMs, etc.)."""
-        try:
-            await member.send(content)
-        except discord.HTTPException:
-            pass
-
-    # ---- approve ---------------------------------------------------------
-
-    async def _grant_floofs(
-        self, member: discord.Member, *, by: discord.Member, reason: str
-    ) -> bool:
-        """Add the Floofs role to `member`. Returns True if newly added."""
-        role = member.guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
-        if role is None:
-            log.warning("Floofs role not found (FLOOFS_ROLE_ID=%s)", self.config.floofs_role_id)
-            return False
-        if role in member.roles:
-            return False
-        await member.add_roles(role, reason=f"Verified by {by} ({reason})")
-        log.info("Granted Floofs to %s (by %s)", member, by)
-        await self._log_action(
-            f"🐾 **{member.display_name}** was verified by **{by.display_name}**."
-        )
-        await self._try_dm(
-            member,
-            f"Welcome to **{member.guild.name}**! You've been verified and given "
-            f"the **{role.name}** role. 🐾",
-        )
-        return True
-
     # ---- reject (temp-ban with cooldown) ---------------------------------
 
     async def _reject(self, member: discord.Member, *, by: discord.Member) -> None:
         guild = member.guild
         hours = self.config.reject_cooldown_hours
 
+        # Never ban an already-verified member.
+        floofs = guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
+        if floofs is not None and floofs in member.roles:
+            log.warning("Refused to reject already-verified member %s", member)
+            await self._log_action(
+                f"⚠️ Did not reject **{member.display_name}** — they already have **{floofs.name}**."
+            )
+            return
+
         # DM first — once banned we may no longer share a server to DM them.
         await self._try_dm(
             member,
-            f"You were **not verified** in **{guild.name}**. There is a "
-            f"**{hours}-hour cooldown** before you can rejoin and try again. "
-            "If you believe this was a mistake, please reach out to the staff team.",
+            messages.pick(messages.REJECTED, server=guild.name, hours=hours)
+            + "\nIf you think this was a mistake, just reach out to the staff team.",
         )
 
         try:
@@ -133,30 +103,18 @@ class Verification(commands.Cog):
             return
 
         unban_at = time.time() + hours * 3600
-        pending = self.store.get(PENDING_UNBANS, {})
-        pending[f"{guild.id}:{member.id}"] = unban_at
-        self.store.set(PENDING_UNBANS, pending)
+
+        def _mutate(data: dict) -> None:
+            data.setdefault(PENDING_UNBANS, {})[f"{guild.id}:{member.id}"] = unban_at
+            self._bump_and_audit(data, "rejected", member, by)
+
+        await self.store.update(_mutate)
+        await self._risk_outcome(member.id, 1)  # a rejection is a "spam" outcome to learn from
 
         log.info("Rejected (temp-banned) %s for %sh (by %s)", member, hours, by)
         await self._log_action(
             f"⛔ **{member.display_name}** was not verified by **{by.display_name}** "
             f"and was banned for {hours}h (auto-unban scheduled)."
-        )
-
-    # ---- warn ------------------------------------------------------------
-
-    async def _warn(self, member: discord.Member, *, by: discord.Member) -> None:
-        await self._try_dm(
-            member,
-            f"Hi! A staff member reviewed your verification in **{member.guild.name}** "
-            "and it looks like something wasn't quite right with how you verified. "
-            "Please re-read the verification instructions and try again. If you're "
-            "unsure what needs fixing, reply to the staff team and we'll help you out. 🐾",
-        )
-        log.info("Warned %s (by %s)", member, by)
-        await self._log_action(
-            f"⚠️ **{member.display_name}** was warned by **{by.display_name}** "
-            "to redo their verification."
         )
 
     # ---- reaction dispatch ----------------------------------------------
@@ -200,12 +158,77 @@ class Verification(commands.Cog):
         if not isinstance(target, discord.Member) or target.bot:
             return
 
+        # Safety: never reject/warn someone who's already verified — that would
+        # ban/bother an existing member. (Approve on them is a harmless no-op.)
+        floofs = guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
+        if action in ("reject", "warn") and floofs is not None and floofs in target.roles:
+            await self._log_action(
+                f"⚠️ Ignored a **{action}** reaction on **{target.display_name}** — they're already "
+                f"verified (has **{floofs.name}**), so no action was taken."
+            )
+            return
+
         if action == "approve":
             await self._grant_floofs(target, by=reactor, reason="reaction approval")
         elif action == "reject":
             await self._reject(target, by=reactor)
         elif action == "warn":
             await self._warn(target, by=reactor)
+
+    # ---- keyword fallback (mobile-friendly) -----------------------------
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Staff can reply to (or @mention) a member with 'verify' / 'warn' /
+        'reject' in the verification channel — a fallback for when the buttons
+        or reactions don't cooperate (e.g. on mobile)."""
+        if message.author.bot or message.guild is None:
+            return
+        if message.channel.id != self.config.verification_channel_id:
+            return
+        actor = message.author
+        if not isinstance(actor, discord.Member) or not self._is_staff(actor):
+            return
+        action = KEYWORD_ACTIONS.get((message.content or "").strip().lower())
+        if action is None:
+            return
+
+        # Figure out who they mean: the replied-to message's author, else a mention.
+        target = None
+        ref = message.reference
+        if ref is not None and ref.message_id:
+            try:
+                replied = await message.channel.fetch_message(ref.message_id)
+                target = replied.author
+            except discord.HTTPException:
+                target = None
+        if target is None and message.mentions:
+            target = message.mentions[0]
+        if not isinstance(target, discord.Member) or target.bot:
+            try:
+                await message.reply(
+                    "Reply to the member's message (or @mention them) with `verify`, `warn`, or `reject`.",
+                    mention_author=False,
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        floofs = message.guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
+        if action in ("reject", "warn") and floofs is not None and floofs in target.roles:
+            await message.reply(f"**{target.display_name}** is already verified — ignoring.", mention_author=False)
+            return
+
+        if action == "approve":
+            await self._grant_floofs(target, by=actor, reason="keyword approval")
+        elif action == "reject":
+            await self._reject(target, by=actor)
+        elif action == "warn":
+            await self._warn(target, by=actor)
+        try:
+            await message.add_reaction("✅")  # confirm it worked
+        except discord.HTTPException:
+            pass
 
     # ---- background: expire cooldowns -----------------------------------
 
@@ -238,7 +261,7 @@ class Verification(commands.Cog):
             del pending[key]
             changed = True
         if changed:
-            self.store.set(PENDING_UNBANS, pending)
+            await self.store.set(PENDING_UNBANS, pending)
 
     @process_unbans.before_loop
     async def _before_unbans(self) -> None:
@@ -248,7 +271,7 @@ class Verification(commands.Cog):
 
     @app_commands.command(name="verify", description="Manually verify a member and give them the Floofs role.")
     @app_commands.describe(member="The member to verify")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @is_staff()
     async def verify(self, interaction: discord.Interaction, member: discord.Member) -> None:
         if not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -262,12 +285,13 @@ class Verification(commands.Cog):
                 ephemeral=True,
             )
 
-    @verify.error
-    async def verify_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "You need the **Manage Roles** permission to use this."
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
         else:
-            log.exception("verify command error", exc_info=error)
+            log.exception("Command error in Verification cog", exc_info=error)
             msg = "Something went wrong running that command."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)

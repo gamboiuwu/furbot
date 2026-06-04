@@ -15,8 +15,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the bot.
 COPY . .
 
-# Run as a non-root user.
-RUN useradd --create-home appuser
+# Run as a non-root user, and make sure it owns the app dir (including the
+# local data folder) so it can write its cache/fallback files.
+RUN useradd --create-home appuser \
+    && mkdir -p /app/data \
+    && chown -R appuser:appuser /app
 USER appuser
 
 CMD ["python", "bot.py"]

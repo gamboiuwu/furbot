@@ -1,66 +1,97 @@
 """General-purpose / utility commands.
 
 A small starter set of commands. This is the easiest place to add new
-"other stuff" as the bot grows.
+"other stuff" as the bot grows. All commands here are staff-only.
 """
 
 from __future__ import annotations
 
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from checks import NotStaff, is_staff
+from verification_actions import VERIFICATIONS, build_userinfo_embed
+
+log = logging.getLogger("furbot.general")
 
 
 class General(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, (NotStaff, app_commands.MissingPermissions, app_commands.CheckFailure)):
+            msg = "🔒 This command is for staff only."
+        else:
+            log.exception("Command error in General cog", exc_info=error)
+            msg = "Something went wrong running that command."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
     @app_commands.command(name="help", description="Show everything FurBot can do.")
+    @is_staff()
     async def help(self, interaction: discord.Interaction) -> None:
         cfg = self.bot.config
-        is_staff = (
-            isinstance(interaction.user, discord.Member)
-            and interaction.user.guild_permissions.manage_roles
-        )
 
         embed = discord.Embed(
             title="🐾 FurBot — Commands & Features",
-            description="Here's everything I can do for the NYFurs server.",
+            description="Everything I can do for the NYFurs server (staff only).",
             color=discord.Color.blurple(),
         )
-
         embed.add_field(
-            name="📋 Commands for everyone",
+            name="🛡️ Commands",
             value=(
                 "**/help** — show this message\n"
                 "**/ping** — check that I'm online and see my latency\n"
-                "**/floofcount** — how many members have the Floofs role"
+                "**/floofcount** — how many members have the Floofs role\n"
+                "**/verify @member** — manually give someone the Floofs role\n"
+                "**/userinfo @member** — account age, join date & roles (vetting)\n"
+                "**/stats** — verification totals\n"
+                "**/leaderboard** — staff verification leaderboard for the month\n"
+                "**/roles** — list every role with its ID (for setup)\n"
+                "**/config view·set·reset** — change bot settings (saved to Nextcloud)\n"
+                "**/onboarding_sweep** — scan unverified members & post a staff summary"
             ),
             inline=False,
         )
-
-        if is_staff:
-            embed.add_field(
-                name="🛡️ Staff commands",
-                value=(
-                    "**/verify @member** — manually give someone the Floofs role\n"
-                    "**/userinfo @member** — account age, join date & roles (vetting)\n"
-                    "**/roles** — list every role with its ID (for setup)"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="✅ Verification reactions (staff only)",
-                value=(
-                    "In the verification channel, react to a member's message:\n"
-                    f"{cfg.approval_emoji} **Approve** — grant the Floofs role + welcome DM\n"
-                    f"{cfg.reject_emoji} **Reject** — DM them and temp-ban for "
-                    f"{cfg.reject_cooldown_hours}h (auto-unban after)\n"
-                    f"{cfg.warn_emoji} **Warn** — DM them to redo their verification"
-                ),
-                inline=False,
-            )
-
+        embed.add_field(
+            name="✅ Verification reactions",
+            value=(
+                "In the verification channel, react to a member's message:\n"
+                f"{cfg.approval_emoji} **Approve** — grant the Floofs role + welcome DM\n"
+                f"{cfg.reject_emoji} **Reject** — DM them and temp-ban for "
+                f"{cfg.reject_cooldown_hours}h (auto-unban after)\n"
+                f"{cfg.warn_emoji} **Warn** — DM them to redo their verification"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🧹 Onboarding (unverified members)",
+            value=(
+                "Unverified members get a reminder DM (with **'I'm waiting'** + **phone help** "
+                "buttons that ping a moderator), then are removed after a grace period.\n"
+                "• **Manual:** `/config set onboarding_enabled true` — staff confirm batches in the log channel.\n"
+                "• **Auto:** also `/config set onboarding_auto true` — sends reminders (throttled) and "
+                "kicks automatically. A welcome is posted when someone is verified."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎂 Birthdays & fun (everyone)",
+            value=(
+                "**/birthday set [day] [month] [year]** — save your birthday for a shoutout + the Birthday role\n"
+                "**/birthday view** · **/birthday clear**\n"
+                "**/echo [message]** — have the bot repeat your message (no pings)"
+            ),
+            inline=False,
+        )
         embed.set_footer(text="Only you can see this message.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -69,64 +100,45 @@ class General(commands.Cog):
         description="Show a member's account details (handy for vetting before verifying).",
     )
     @app_commands.describe(member="The member to look up")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @is_staff()
     async def userinfo(self, interaction: discord.Interaction, member: discord.Member) -> None:
-        created_ts = int(member.created_at.timestamp())
-        account_age_days = (discord.utils.utcnow() - member.created_at).days
-
-        embed = discord.Embed(
-            title=f"👤 {member}",
-            color=member.color if member.color.value else discord.Color.blurple(),
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="User ID", value=f"`{member.id}`", inline=False)
-        embed.add_field(
-            name="Account created",
-            value=f"<t:{created_ts}:D> (<t:{created_ts}:R>)\n**{account_age_days} days** old",
-            inline=False,
-        )
-        if member.joined_at:
-            joined_ts = int(member.joined_at.timestamp())
-            embed.add_field(name="Joined server", value=f"<t:{joined_ts}:D> (<t:{joined_ts}:R>)", inline=False)
-
-        # Young accounts are the classic raid/alt signal — flag them.
-        if account_age_days < 7:
-            embed.add_field(
-                name="⚠️ Heads up",
-                value="This account is **less than a week old** — double-check before verifying.",
-                inline=False,
-            )
-
-        floofs_id = getattr(self.bot.config, "floofs_role_id", None)
-        verified = bool(floofs_id) and any(r.id == floofs_id for r in member.roles)
-        embed.add_field(name="Verified?", value="✅ Yes" if verified else "❌ Not yet", inline=False)
-
-        roles = [r.mention for r in reversed(member.roles) if not r.is_default()]
-        embed.add_field(
-            name=f"Roles ({len(roles)})",
-            value=", ".join(roles) if roles else "None",
-            inline=False,
+        record = self.bot.store.get(VERIFICATIONS, {}).get(str(member.id))
+        embed = build_userinfo_embed(
+            member, floofs_role_id=getattr(self.bot.config, "floofs_role_id", None), verified_by=record
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @userinfo.error
-    async def userinfo_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        msg = (
-            "You need the **Manage Roles** permission to use this."
-            if isinstance(error, app_commands.MissingPermissions)
-            else "Something went wrong looking that up."
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+    @app_commands.command(name="stats", description="Show verification totals (verified / rejected / warned).")
+    @is_staff()
+    async def stats(self, interaction: discord.Interaction) -> None:
+        data = self.bot.store.get("stats", {})
+        embed = discord.Embed(title="📊 Verification stats", color=discord.Color.blurple())
+        embed.add_field(name="✅ Verified", value=str(data.get("verified", 0)))
+        embed.add_field(name="⛔ Rejected", value=str(data.get("rejected", 0)))
+        embed.add_field(name="⚠️ Warned", value=str(data.get("warned", 0)))
+        embed.add_field(name="📨 Reminders sent", value=str(data.get("reminded", 0)))
+        embed.add_field(name="👢 Removed (unverified)", value=str(data.get("onboard_kicked", 0)))
+        storage = "Nextcloud" if self.bot.config.webdav_enabled else "local files"
+        embed.set_footer(text=f"Stored on: {storage}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="ping", description="Check that the bot is alive and see its latency.")
+    @is_staff()
     async def ping(self, interaction: discord.Interaction) -> None:
         latency_ms = round(self.bot.latency * 1000)
         await interaction.response.send_message(f"🏓 Pong! Latency: {latency_ms}ms", ephemeral=True)
 
+    @app_commands.command(name="echo", description="Have the bot repeat your message.")
+    @app_commands.describe(message="What should I say?")
+    async def echo(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 2000]) -> None:
+        # Public command (anyone). Send with ALL mentions disabled so it can't
+        # be used to ping @everyone/@here, roles, or mass-mention users.
+        await interaction.response.send_message(
+            message, allowed_mentions=discord.AllowedMentions.none()
+        )
+
     @app_commands.command(name="floofcount", description="See how many members currently have the Floofs role.")
+    @is_staff()
     async def floofcount(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         role_id = getattr(self.bot.config, "floofs_role_id", None)
@@ -147,9 +159,8 @@ class General(commands.Cog):
             f"🐾 There are **{len(role.members)}** floofs in the server!", ephemeral=True
         )
 
-
     @app_commands.command(name="roles", description="List every role and its ID (handy for configuring the bot).")
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @is_staff()
     async def roles(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
         if guild is None:
@@ -169,18 +180,6 @@ class General(commands.Cog):
         if len(text) > 1900:
             text = text[:1900] + "\n… (list truncated)"
         await interaction.response.send_message(text, ephemeral=True)
-
-    @roles.error
-    async def roles_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        msg = (
-            "You need the **Manage Roles** permission to use this."
-            if isinstance(error, app_commands.MissingPermissions)
-            else "Something went wrong listing roles."
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

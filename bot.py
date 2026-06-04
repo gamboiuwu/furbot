@@ -14,6 +14,10 @@ import discord
 from discord.ext import commands
 
 from config import Config
+from risk import RiskScorer
+from settings import Settings
+from store import Store
+from webdav import WebDAVClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +37,18 @@ INTENTS.reactions = True        # needed for the reaction-to-role verification f
 INITIAL_COGS = (
     "cogs.general",
     "cogs.verification",
+    "cogs.config",
+    "cogs.onboarding",
+    "cogs.birthday",
+    "cogs.leaderboard",
+    "cogs.review",
+    "cogs.taskboard",
+    "cogs.dmrelay",
+    "cogs.serverlog",
+    "cogs.fart",
+    "cogs.hipileon",
+    "cogs.slurwatch",
+    "cogs.argument",
 )
 
 
@@ -45,7 +61,44 @@ class FurBot(commands.Bot):
         )
         self.config = config
 
+        # Shared persistence. Backed by Nextcloud (WebDAV) if configured,
+        # otherwise local files in DATA_DIR.
+        webdav = None
+        if config.webdav_enabled:
+            webdav = WebDAVClient(config.webdav_url, config.webdav_username, config.webdav_password)
+        self.store = Store(local_dir=config.data_dir, webdav=webdav)
+        # Runtime settings, persisted to the store and editable via /config.
+        self.settings = Settings(self.store, config)
+        # Join risk scorer (learns from verify/deny outcomes over time).
+        self.risk = RiskScorer(self.store)
+
     async def setup_hook(self) -> None:
+        # Prepare persistence before any cog needs it.
+        if self.store.webdav:
+            try:
+                await self.store.webdav.ensure_base()
+                ok = await self.store.webdav.check()
+                log.info("Nextcloud storage %s.", "connected" if ok else "NOT reachable (using local fallback)")
+            except Exception:
+                log.exception("Nextcloud setup failed; using local fallback.")
+        else:
+            log.info("Nextcloud not configured; using local files in %s.", self.config.data_dir)
+        await self.store.load()
+
+        # Populate the storage folder up-front so the JSON files exist (and are
+        # visible on Nextcloud) rather than appearing only on first change.
+        await self.settings.initialize()
+        await self.store.ensure_defaults({
+            "stats": {},
+            "audit": [],
+            "pending_unbans": {},
+            "onboarding.reminded": {},
+            "onboarding.escalated": {},
+        })
+        # Write a complete snapshot of all configuration (core + settings) to
+        # config.json on the WebDAV drive.
+        await self.save_config_snapshot()
+
         # Load every feature module.
         for cog in INITIAL_COGS:
             try:
@@ -53,6 +106,17 @@ class FurBot(commands.Bot):
                 log.info("Loaded cog: %s", cog)
             except Exception:
                 log.exception("Failed to load cog: %s", cog)
+
+        # Register persistent button handlers so they keep working after a
+        # restart. DynamicItems are registered by class; the batch view by
+        # instance (its custom_ids are fixed).
+        from cogs.onboarding import BatchConfirmView, ModActionButton, PhoneReviewButton, WaitingButton
+        from cogs.review import ReviewButton, ReviewConsentButton, ReviewOptOutButton
+        self.add_dynamic_items(
+            WaitingButton, PhoneReviewButton, ModActionButton,
+            ReviewButton, ReviewConsentButton, ReviewOptOutButton,
+        )
+        self.add_view(BatchConfirmView(self))
 
         # Register slash commands. If a guild ID is configured we sync to
         # that guild for instant availability; otherwise we sync globally
@@ -65,6 +129,25 @@ class FurBot(commands.Bot):
         else:
             synced = await self.tree.sync()
             log.info("Synced %d slash command(s) globally", len(synced))
+
+    async def save_config_snapshot(self) -> None:
+        """Write a complete, non-secret snapshot of all configuration (the core
+        env config + every effective /config setting) to config.json on WebDAV."""
+        import dataclasses
+
+        from settings import SETTINGS
+
+        core = dataclasses.asdict(self.config)
+        for secret in ("token", "webdav_url", "webdav_username", "webdav_password"):
+            core.pop(secret, None)
+        snapshot = {
+            "core_config": core,
+            "settings": {key: self.settings.get(key) for key in SETTINGS},
+        }
+        try:
+            await self.store.set("config", snapshot)
+        except Exception:
+            log.exception("Failed to save config snapshot")
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id: %s)", self.user, self.user.id if self.user else "?")
