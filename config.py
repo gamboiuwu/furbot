@@ -132,6 +132,7 @@ class Config:
     argument_enabled: bool | None
     argument_channel_id: int | None
     verify_copy_kick_enabled: bool | None
+    verify_copy_similarity: float | None
     verify_copy_min_chars: int | None
     verify_copy_window: int | None
     risk_warnings_enabled: bool | None
@@ -237,6 +238,7 @@ class Config:
             argument_enabled=_get_bool("ARGUMENT_ENABLED"),
             argument_channel_id=_get_int("ARGUMENT_CHANNEL_ID"),
             verify_copy_kick_enabled=_get_bool("VERIFY_COPY_KICK_ENABLED"),
+            verify_copy_similarity=_get_float("VERIFY_COPY_SIMILARITY"),
             verify_copy_min_chars=_get_int("VERIFY_COPY_MIN_CHARS"),
             verify_copy_window=_get_int("VERIFY_COPY_WINDOW"),
             risk_warnings_enabled=_get_bool("RISK_WARNINGS_ENABLED"),
