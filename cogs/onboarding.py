@@ -1087,7 +1087,7 @@ class Onboarding(commands.Cog, MemberActions):
         # remembered below so they can serve as the "original" someone copies.)
         if (long_enough and not verified and not self._is_staff(member)
                 and self._s("verify_copy_kick_enabled")
-                and await self._handle_possible_copy(member, norm)):
+                and await self._handle_possible_copy(message, member, norm)):
             return  # they were kicked
 
         # Remember this message so anyone's post can be a future "original".
@@ -1168,12 +1168,15 @@ class Onboarding(commands.Cog, MemberActions):
 
         await self.store.update(remember)
 
-    async def _handle_possible_copy(self, member: discord.Member, norm: str) -> bool:
+    async def _handle_possible_copy(
+        self, message: discord.Message, member: discord.Member, norm: str
+    ) -> bool:
         """If `norm` (the member's normalized message) is at least
         `verify_copy_similarity` similar to a *different* member's remembered
-        message, the copier fails verification and is auto-kicked with a firm DM.
-        No mod alert is sent. Returns True if we kicked them. Callers gate this
-        to unverified, non-staff members of meaningful length."""
+        message, the copier fails verification and is auto-kicked with a firm DM,
+        and the offending message gets alert + kick reactions. No mod alert is
+        sent. Returns True if we kicked them. Callers gate this to unverified,
+        non-staff members of meaningful length."""
         threshold = float(self._s("verify_copy_similarity") or 0.9)
         min_chars = self._s("verify_copy_min_chars") or 40
         recent = self.store.get(VERIFY_RECENT, [])
@@ -1204,6 +1207,13 @@ class Onboarding(commands.Cog, MemberActions):
         if member.id in self._copy_kicked:
             return True  # already being handled (multi-message paste)
         self._copy_kicked.add(member.id)
+
+        # Mark the offending message with alert + kick reactions.
+        for emoji in ("🚨", "👢"):
+            try:
+                await message.add_reaction(emoji)
+            except discord.HTTPException:
+                pass
 
         guild = member.guild
         pct = round(best * 100)
