@@ -1156,7 +1156,8 @@ class Roommates(commands.Cog):
         try:
             await member.send(f"{lead}\n\n{self._anon_summary(lst)}\n\n{tail}", view=build_offer_view(o["id"]))
         except discord.HTTPException:
-            log.info("Could not DM %s for roommate offer %s (DMs closed?)", uid, o["id"])
+            log.warning("Could not DM %s for offer %s — closing offer so they aren't stuck.", uid, o["id"])
+            await self._close_offer(o["id"])
 
     async def _reveal(self, o: dict) -> None:
         con, kind = o["con"], _kind_label(o["kind"])
@@ -1380,6 +1381,9 @@ class Roommates(commands.Cog):
 
     # ---- safety-net sweep (immediate matching is primary) ---------------
 
+    # Offers older than this many seconds are expired so users don't stay stuck.
+    _OFFER_TTL = 72 * 3600  # 72 hours
+
     @tasks.loop(hours=6)
     async def sweep_loop(self) -> None:
         interval = max(1, int(self._s("roommate_match_interval_hours") or 6))
@@ -1388,6 +1392,13 @@ class Roommates(commands.Cog):
         if not self._s("roommate_enabled") or not self._adult_configured() or self._guild() is None:
             return
         try:
+            # Expire stale offers so users don't stay blocked on an unanswered DM.
+            now = time.time()
+            for oid, o in list(self.store.get(OFFERS, {}).items()):
+                if now - o.get("created_at", now) > self._OFFER_TTL:
+                    log.info("Expiring stale offer %s (>72 h old)", oid)
+                    await self._close_offer(oid)
+
             busy = {u for o in self.store.get(OFFERS, {}).values() for u in (o["u1"], o["u2"])}
             for l in self._open_listings():
                 if l["user_id"] not in busy:
