@@ -379,6 +379,17 @@ class RegistrationModal(discord.ui.Modal):
             self.budget.value.strip(), self.confirm.value.strip(),
         )
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        log.exception("RegistrationModal.on_submit failed", exc_info=error)
+        msg = "Something went wonky saving your listing — please try again in a moment! 🐾"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
+
 
 # ============================ browse / search =================================
 
@@ -669,6 +680,10 @@ class Roommates(commands.Cog):
             )
             return
 
+        # All validation passed — defer NOW so the WebDAV save (which can take
+        # a few seconds) doesn't expire the 3-second interaction token.
+        await interaction.response.defer(ephemeral=True)
+
         listings = dict(self._all_listings())
         existing = self._user_listing(user_id, con, kind)
         lid = existing["id"] if existing else _short()
@@ -683,14 +698,13 @@ class Roommates(commands.Cog):
         }
         await self.store.set(LISTINGS, listings)
 
-        # Minimal outreach: no "you're looking for a roommate" nudge to the registrant. Just an
-        # ephemeral confirmation; the only DMs we ever send are actual match offers.
         verb = "updated" if existing else "saved"
-        await interaction.response.send_message(
-            f"✅ {verb.capitalize()} your **{_kind_label(kind)}** listing for **{con}** "
-            f"({'hosting' if role == 'host' else 'looking to join'})! I'll only ping you if I find a real match. "
-            "Make sure your **DMs are open** to server members so I can reach you, keep addresses and personal "
-            "info out, and take the planning to DMs once you connect. 🐾",
+        await interaction.followup.send(
+            f"{'🔄' if existing else '🎉'} {'Updated' if existing else 'Woohoo, you are in!'} "
+            f"Your **{_kind_label(kind)}** listing for **{con}** "
+            f"({'hosting' if role == 'host' else 'looking to join'}) is {'updated' if existing else 'live'}. "
+            "I'll DM you the moment I sniff out a match! "
+            "Make sure your **DMs are open** to server members so I can reach you. 🐾",
             ephemeral=True,
         )
 
@@ -1014,15 +1028,15 @@ class Roommates(commands.Cog):
             return
         kind = _kind_label(o["kind"])
         if o.get("host") == uid:
-            lead = f"👋 Pawsome, someone would love to join your **{kind}** for **{o['con']}**! Here's about them (no name yet):"
-            tail = ("As the host it's **totally your call**, approve or pass, no pressure and no need to explain. "
-                    "If you both say yes, I'll introduce you. 🐾")
+            lead = f"🐾 Hey! Exciting news — someone wants to join your **{kind}** for **{o['con']}**! Here's a peek at them (no names yet):"
+            tail = ("As the host it's **totally your call** — approve or pass, no pressure and no need to explain. "
+                    "If you both say yes, I'll introduce you! 🎉")
         elif o.get("host") == other:
-            lead = f"👋 A host has room in their **{kind}** for **{o['con']}**! Here's the setup (no name yet):"
-            tail = "Want me to put your paw up? The host has the final say, but if you're both in I'll introduce you. 🐾"
+            lead = f"🐾 Hey! I found a **{kind}** host for **{o['con']}** that looks like a great fit! Here's their setup (no names yet):"
+            tail = "Interested? Hit Yes and I'll ask the host too — if you're both in, I'll make the intro! 🎉"
         else:
-            lead = f"👋 I think I sniffed out a possible **roommate buddy** for **{o['con']}** (no name yet):"
-            tail = "Want me to connect you two? If you both say yes I'll introduce you. 🐾"
+            lead = f"🐾 Hey! I sniffed out a possible **roommate match** for **{o['con']}**! Here's about them (no names yet):"
+            tail = "If you're both interested, I'll introduce you! 🎉"
         try:
             await member.send(f"{lead}\n\n{self._anon_summary(lst)}\n\n{tail}", view=build_offer_view(o["id"]))
         except discord.HTTPException:
@@ -1047,13 +1061,13 @@ class Roommates(commands.Cog):
         if m1:
             who = f"{m2.mention} (`{m2}`)" if m2 else f"<@{o['u2']}>"
             try:
-                await m1.send(f"🎉 It's a match for **{con}** ({kind})! You both said yes. Say hi to {who}!" + note)
+                await m1.send(f"🎉 **It's a match for {con}!** You both said yes — say hi to {who}! 🐾" + note)
             except discord.HTTPException:
                 pass
         if m2:
             who = f"{m1.mention} (`{m1}`)" if m1 else f"<@{o['u1']}>"
             try:
-                await m2.send(f"🎉 It's a match for **{con}** ({kind})! You both said yes. Say hi to {who}!" + note)
+                await m2.send(f"🎉 **It's a match for {con}!** You both said yes — say hi to {who}! 🐾" + note)
             except discord.HTTPException:
                 pass
 
