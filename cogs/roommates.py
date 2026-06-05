@@ -807,9 +807,17 @@ class Roommates(commands.Cog):
     async def show_browse_results(self, interaction: discord.Interaction, user_id: int, con: str) -> None:
         listings = self._visible_for(user_id, con)
         if not listings:
+            reg_btn = discord.ui.Button(label="Register for this con", style=discord.ButtonStyle.primary, emoji="🛏️")
+            cog_ref = self
+            async def _go_register(inter: discord.Interaction) -> None:
+                await cog_ref.hub_register(inter)
+            reg_btn.callback = _go_register
+            view = discord.ui.View(timeout=300)
+            view.add_item(reg_btn)
             await interaction.response.edit_message(
-                content=f"No compatible listings for **{con}** just yet. Register and I'll keep my nose out for "
-                        "matches! 🐾", view=None,
+                content=f"No listings for **{con}** yet — be the first! 🐾\n"
+                        "Register below and I'll match you the moment someone else signs up.",
+                view=view,
             )
             return
         lines = [f"📋 **{len(listings)} open listing(s) for {con}** (names hidden):\n"]
@@ -824,7 +832,7 @@ class Roommates(commands.Cog):
         await interaction.response.edit_message(content="\n".join(lines)[:1900], view=view)
 
     async def show_search_results(self, interaction: discord.Interaction, user_id: int, query: str) -> None:
-        q = query.lower()
+        q = query.lower().strip()
         hits = []
         for l in self._open_listings():
             if l["user_id"] == user_id:
@@ -832,13 +840,50 @@ class Roommates(commands.Cog):
             hay = " ".join([l["con"], l["kind"], l["role"], l.get("details", "")]).lower()
             if q in hay:
                 hits.append(l)
+
         if not hits:
+            # If the query looks like a con name, redirect to browse for that con.
+            matching = [c for c in self._cons() if q in c.lower() or c.lower() in q]
+            if matching:
+                con = matching[0]
+                listings = self._visible_for(user_id, con)
+                if not listings:
+                    reg_btn = discord.ui.Button(label="Register for this con", style=discord.ButtonStyle.primary, emoji="🛏️")
+                    cog_ref = self
+                    async def _go_register(inter: discord.Interaction) -> None:
+                        await cog_ref.hub_register(inter)
+                    reg_btn.callback = _go_register
+                    view = discord.ui.View(timeout=300)
+                    view.add_item(reg_btn)
+                    await interaction.response.send_message(
+                        f"No listings for **{con}** yet — be the first! 🐾\n"
+                        "Register below and I'll match you the moment someone else signs up.",
+                        view=view, ephemeral=True,
+                    )
+                else:
+                    hits = listings
+                    lines = [f"📋 **{len(hits)} listing(s) for {con}** (names hidden):\n"]
+                    for l in hits[:25]:
+                        band = "/".join(l.get("own_bands") or []) or "18+"
+                        lines.append(f"• **{l['id'][:4].upper()}** {'🚗' if l['kind']=='carpool' else '🏨'} "
+                                     f"{'host' if l['role']=='host' else 'join'}, {_cap_str(l)}, age {band}")
+                    lines.append("\nPick one below to wag your interest. 🐾")
+                    view = discord.ui.View(timeout=600)
+                    view.add_item(_InterestSelect(self, user_id, hits))
+                    await interaction.response.send_message("\n".join(lines)[:1900], view=view, ephemeral=True)
+                return
+            # No con match and no listings — list available cons so the user knows what to search.
+            cons = self._cons()
+            cons_hint = f"\n\nAvailable cons: {', '.join(cons[:20])}" if cons else ""
             await interaction.response.send_message(
-                f"Nothing matched **{query}**. Try browsing, or register your own! 🐾", ephemeral=True
+                f"Nothing matched **{query}**. Try a con name (e.g. `Anthrocon`) or register your own listing! 🐾"
+                + cons_hint,
+                ephemeral=True,
             )
             return
+
         hits.sort(key=lambda l: l["created_at"])
-        lines = [f"🔎 **{len(hits)} match(es) for “{query}”** (names hidden):\n"]
+        lines = [f"🔎 **{len(hits)} match(es) for \"{query}\"** (names hidden):\n"]
         for l in hits[:25]:
             band = "/".join(l.get("own_bands") or []) or "18+"
             lines.append(f"• **{l['id'][:4].upper()}** {l['con']}, {'🚗' if l['kind']=='carpool' else '🏨'} "

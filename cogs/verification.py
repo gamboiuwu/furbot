@@ -13,6 +13,7 @@ There is also a manual `/verify` slash command as a fallback for approval.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -22,7 +23,7 @@ from discord.ext import commands, tasks
 
 import messages
 from checks import NotStaff, is_staff
-from verification_actions import MemberActions
+from verification_actions import MemberActions, VERIFICATIONS
 
 log = logging.getLogger("furbot.verification")
 
@@ -45,6 +46,9 @@ class Verification(commands.Cog, MemberActions):
         self.config = bot.config
         self.store = bot.store
         self.settings = bot.settings
+        # Per-message asyncio locks so two staff reactions can't race each other.
+        self._msg_locks: dict[int, asyncio.Lock] = {}
+        self._msg_handler: dict[int, str] = {}  # msg_id -> handler display name
 
     async def cog_load(self) -> None:
         self.process_unbans.start()
@@ -158,22 +162,59 @@ class Verification(commands.Cog, MemberActions):
         if not isinstance(target, discord.Member) or target.bot:
             return
 
-        # Safety: never reject/warn someone who's already verified — that would
-        # ban/bother an existing member. (Approve on them is a harmless no-op.)
+        msg_id = payload.message_id
         floofs = guild.get_role(self.config.floofs_role_id) if self.config.floofs_role_id else None
-        if action in ("reject", "warn") and floofs is not None and floofs in target.roles:
+
+        # If another mod is already processing this message, drop the duplicate.
+        lock = self._msg_locks.setdefault(msg_id, asyncio.Lock())
+        if lock.locked():
+            handler = self._msg_handler.get(msg_id, "another mod")
+            try:
+                await message.remove_reaction(payload.emoji, reactor)
+            except discord.HTTPException:
+                pass
             await self._log_action(
-                f"⚠️ Ignored a **{action}** reaction on **{target.display_name}** — they're already "
-                f"verified (has **{floofs.name}**), so no action was taken."
+                f"🔒 Removed **{reactor.display_name}**'s reaction — "
+                f"**{handler}** is already handling **{target.display_name}**'s verification."
             )
             return
 
-        if action == "approve":
-            await self._grant_floofs(target, by=reactor, reason="reaction approval")
-        elif action == "reject":
-            await self._reject(target, by=reactor)
-        elif action == "warn":
-            await self._warn(target, by=reactor)
+        # If the member is already verified, remove the reaction and explain.
+        if floofs is not None and floofs in target.roles:
+            verif = self.store.get(VERIFICATIONS, {}).get(str(target.id), {})
+            verifier_name = verif.get("by_name", "a mod")
+            try:
+                await message.remove_reaction(payload.emoji, reactor)
+            except discord.HTTPException:
+                pass
+            if action == "approve":
+                await self._log_action(
+                    f"🔒 Removed **{reactor.display_name}**'s ✅ — "
+                    f"**{target.display_name}** was already verified by **{verifier_name}** "
+                    f"and it cannot be reverted."
+                )
+            else:
+                await self._log_action(
+                    f"⚠️ Removed **{reactor.display_name}**'s {action} reaction — "
+                    f"**{target.display_name}** is already verified (by **{verifier_name}**), "
+                    f"so no action was taken."
+                )
+            return
+
+        async with lock:
+            self._msg_handler[msg_id] = reactor.display_name
+            try:
+                if action == "approve":
+                    await self._grant_floofs(target, by=reactor, reason="reaction approval")
+                elif action == "reject":
+                    await self._reject(target, by=reactor)
+                elif action == "warn":
+                    await self._warn(target, by=reactor)
+            finally:
+                self._msg_handler.pop(msg_id, None)
+                # Remove the lock entry once it's free to avoid unbounded growth.
+                if not lock.locked():
+                    self._msg_locks.pop(msg_id, None)
 
     # ---- keyword fallback (mobile-friendly) -----------------------------
 
