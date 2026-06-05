@@ -102,6 +102,11 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "risk_dm_threshold":         (float, 0.6,   "Risk score (0-1) at which to warn a mod about a new join. Higher = fewer alerts."),
     "risk_raid_window_minutes":  (int,   10,    "Window for detecting a burst of rapid joins (raid)."),
     "risk_raid_min_joins":       (int,   6,     "Joins within the window that count as a raid burst."),
+    "roommate_enabled":          (bool,  False, "Master switch for the 18+ con roommate finder."),
+    "roommate_hub_channel_id":   (int,   1512529974266040443, "Channel where the roommate-finder hub message is posted (/roommate setup)."),
+    "roommate_adult_role_id":    (int,   0,     "Role that marks a member as 18+ for the roommate finder (0 = use the verified-members role)."),
+    "roommate_cons":             (str,   "",    "Comma-separated list of conventions members can pick from."),
+    "roommate_match_interval_hours": (int, 24,  "How often the matcher looks for compatible roommates and reaches out."),
 }
 
 
