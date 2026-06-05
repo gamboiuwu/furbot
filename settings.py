@@ -104,9 +104,15 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "risk_raid_min_joins":       (int,   6,     "Joins within the window that count as a raid burst."),
     "roommate_enabled":          (bool,  False, "Master switch for the 18+ con roommate finder."),
     "roommate_hub_channel_id":   (int,   1512529974266040443, "Channel where the roommate-finder hub message is posted (/roommate setup)."),
-    "roommate_adult_role_id":    (int,   0,     "Role that marks a member as 18+ for the roommate finder (0 = use the verified-members role)."),
+    "roommate_adult_role_id":    (int,   0,     "Fallback 18+ role if no age-range roles are configured (0 = use the verified-members role)."),
+    "roommate_age_roles":        (str,
+        "18-19:968639927942271066,20-29:968639955880534037,30-39:968639982052995102,"
+        "40-49:1484909865590718625,50-59:1484909891939336375,60+:1484909914701697095",
+        "Age-range roles as 'label:role_id' pairs (comma-separated). Holding any one proves 18+; used for age matching."),
     "roommate_cons":             (str,   "",    "Comma-separated list of conventions members can pick from."),
-    "roommate_match_interval_hours": (int, 24,  "How often the matcher looks for compatible roommates and reaches out."),
+    "roommate_match_interval_hours": (int, 6,   "Safety-net sweep interval (hours) — matching is mostly immediate on registration."),
+    "roommate_cons_channel_id":  (int,   1173049058856816772, "Forum/channel scanned by /roommate importcons to auto-add con names."),
+    "roommate_con_dates":        (str,   "", "Optional con date windows for validation, e.g. 'Anthrocon: 2026-07-02..2026-07-05; FurDU: 2026-04-24..2026-04-27'."),
 }
 
 

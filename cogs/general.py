@@ -35,63 +35,92 @@ class General(commands.Cog):
         else:
             await interaction.response.send_message(msg, ephemeral=True)
 
+    def _viewer_is_staff(self, interaction: discord.Interaction) -> bool:
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            return False
+        sid = getattr(self.bot.config, "staff_role_id", None)
+        if sid and any(r.id == sid for r in member.roles):
+            return True
+        return bool(member.guild_permissions.manage_roles)
+
     @app_commands.command(name="help", description="Show everything FurBot can do.")
-    @is_staff()
     async def help(self, interaction: discord.Interaction) -> None:
+        # Open to everyone. Staff-only sections appear only for staff.
+        is_staff_viewer = self._viewer_is_staff(interaction)
         cfg = self.bot.config
 
         embed = discord.Embed(
-            title="🐾 FurBot — Commands & Features",
-            description="Everything I can do for the NYFurs server (staff only).",
+            title="🐾 FurBot — Commands",
+            description=("Here's what I can do! Commands you can use are below."
+                         + (" Staff-only tools are at the bottom." if is_staff_viewer else "")),
             color=discord.Color.blurple(),
         )
         embed.add_field(
-            name="🛡️ Commands",
+            name="🛏️ Roommate & carpool finder (18+)",
             value=(
-                "**/help** — show this message\n"
-                "**/ping** — check that I'm online and see my latency\n"
-                "**/floofcount** — how many members have the Floofs role\n"
-                "**/verify @member** — manually give someone the Floofs role\n"
-                "**/userinfo @member** — account age, join date & roles (vetting)\n"
-                "**/stats** — verification totals\n"
-                "**/leaderboard** — staff verification leaderboard for the month\n"
-                "**/roles** — list every role with its ID (for setup)\n"
-                "**/config view·set·reset** — change bot settings (saved to Nextcloud)\n"
-                "**/onboarding_sweep** — scan unverified members & post a staff summary"
+                "**/roommate find** — list a hotel room or carpool (hosting or looking to join)\n"
+                "**/roommate edit** — change one of your listings\n"
+                "**/roommate browse** — see open listings (names hidden)\n"
+                "**/roommate status** — your listings & any pending matches\n"
+                "**/roommate cancel** — take a listing down\n"
+                "**/roommate rules** — the room/ride rules & safety"
             ),
             inline=False,
         )
         embed.add_field(
-            name="✅ Verification reactions",
+            name="🎉 Events & fun",
             value=(
-                "In the verification channel, react to a member's message:\n"
-                f"{cfg.approval_emoji} **Approve** — grant the Floofs role + welcome DM\n"
-                f"{cfg.reject_emoji} **Reject** — DM them and temp-ban for "
-                f"{cfg.reject_cooldown_hours}h (auto-unban after)\n"
-                f"{cfg.warn_emoji} **Warn** — DM them to redo their verification"
+                "**/events** — upcoming NYFurs events\n"
+                "**/birthday set·view·clear** — birthday shoutout + the Birthday role\n"
+                "**/welcomepoints** — your points for welcoming new members\n"
+                "**/echo [message]** — have me repeat something (no pings)\n"
+                "**/help** — show this message"
             ),
             inline=False,
         )
         embed.add_field(
-            name="🧹 Onboarding (unverified members)",
+            name="✅ Getting verified",
             value=(
-                "Unverified members get a reminder DM (with **'I'm waiting'** + **phone help** "
-                "buttons that ping a moderator), then are removed after a grace period.\n"
-                "• **Manual:** `/config set onboarding_enabled true` — staff confirm batches in the log channel.\n"
-                "• **Auto:** also `/config set onboarding_auto true` — sends reminders (throttled) and "
-                "kicks automatically. A welcome is posted when someone is verified."
+                "Post your intro in the verification channel and a mod will react to approve you, "
+                "which grants the **Floofs** role and a welcome. Mods may ask you to add detail first."
             ),
             inline=False,
         )
-        embed.add_field(
-            name="🎂 Birthdays & fun (everyone)",
-            value=(
-                "**/birthday set [day] [month] [year]** — save your birthday for a shoutout + the Birthday role\n"
-                "**/birthday view** · **/birthday clear**\n"
-                "**/echo [message]** — have the bot repeat your message (no pings)"
-            ),
-            inline=False,
-        )
+
+        if is_staff_viewer:
+            embed.add_field(
+                name="🛡️ Staff · members & verification",
+                value=(
+                    "**/verify @member** — grant the Floofs role manually\n"
+                    "**/userinfo @member** — account age, join date & roles (vetting)\n"
+                    "**/floofcount** — how many have the Floofs role\n"
+                    "**/stats** — verification totals · **/roles** — list role IDs\n"
+                    "**/leaderboard** — monthly staff verification leaderboard · **/ping**"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="⚙️ Staff · config, events & tasks",
+                value=(
+                    "**/config view·set·reset·save** — bot settings (saved to Nextcloud)\n"
+                    "**/syncevents** · **/eventsdebug [id]** — Indico event sync & diagnostics\n"
+                    "**/task claim·assign·owner·board** — staff task board\n"
+                    "**/argument** — kick off the weekly bit\n"
+                    "Onboarding sweeps run automatically; tune them with `/config set onboarding_*`."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🛏️ Staff · roommate finder admin",
+                value=(
+                    "**/roommate setup** — post/refresh the finder hub message\n"
+                    "**/roommate importcons [channel]** — add cons from a forum's post titles\n"
+                    "**/roommate stats** — listings, offers & matches at a glance"
+                ),
+                inline=False,
+            )
+
         embed.set_footer(text="Only you can see this message.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

@@ -52,9 +52,9 @@ class ReviewModal(discord.ui.Modal):
         self.anonymous = anonymous
         self.inputs: list[discord.ui.TextInput] = []
         for q in QUESTIONS:
-            item = discord.ui.TextInput(label=q, style=discord.TextStyle.paragraph, required=False, max_length=1000)
+            item = discord.ui.TextInput(style=discord.TextStyle.paragraph, required=False, max_length=1000)
             self.inputs.append(item)
-            self.add_item(item)
+            self.add_item(discord.ui.Label(text=q, component=item))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         answers = [i.value for i in self.inputs]
