@@ -1,4 +1,4 @@
-"""Con Roommate & Carpool Finder, fluff edition.
+"""Con Roommate & Carpool Finder, concierge edition.
 
 Privately match NYFurs members who want to share a hotel room or a car ride to
 a convention.
@@ -16,7 +16,7 @@ Design / safety (mirrors the in-app rules, see _rules_text and the hub message):
     Hosts have the final say and may decline freely, no arguing.
   * Interest-gathering only. We store NO addresses or personal info, real
     coordination happens in DMs/private group chats after a match.
-  * The bot reaches out the moment it sniffs out a compatible match (most
+  * The bot reaches out the moment it finds a compatible match (most
     compatible first), not on a fixed daily timer.
 
 Everything persists to the WebDAV store. We keep only the Discord user id (to
@@ -277,7 +277,7 @@ class RulesAgreeView(discord.ui.View):
     @discord.ui.button(label="✅ I agree — let's go", style=discord.ButtonStyle.success)
     async def agree(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This form isn't yours, friend.", ephemeral=True)
+            await interaction.response.send_message("This form isn't yours.", ephemeral=True)
             return
         # Open the form first (acknowledges the click), then persist agreement —
         # the WebDAV write must not delay the interaction response past 3s.
@@ -363,17 +363,17 @@ class RegistrationView(discord.ui.View):
             f"• Type: {show(combo_lbl)}\n"
             f"• Con: {show(self.sel['con'])}\n"
             f"• Roommate age range: {age_str}\n\n"
-            "Pick all three, then tap **Continue** for the headcount, dates and details. 🐾"
+            "Pick all three, then tap **Continue** for the headcount, dates and details."
         )
 
     @discord.ui.button(label="Continue →", style=discord.ButtonStyle.success, row=3)
     async def cont(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This form isn't yours, friend.", ephemeral=True)
+            await interaction.response.send_message("This form isn't yours.", ephemeral=True)
             return
         if not all(self.sel[k] for k in ("combo", "con", "age")):
             await interaction.response.send_message(
-                "Pick a type, a con, and an age range first, then we'll grab the rest. 🐾", ephemeral=True
+                "Pick a type, a con, and an age range first, then we'll collect the rest.", ephemeral=True
             )
             return
         kind, role = str(self.sel["combo"]).split(":")
@@ -528,7 +528,7 @@ class RegistrationModal(discord.ui.Modal):
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         log.exception("RegistrationModal.on_submit failed", exc_info=error)
-        msg = "Something went wonky saving your listing — please try again in a moment! 🐾"
+        msg = "Something went wrong saving your listing — please try again in a moment."
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
@@ -712,12 +712,12 @@ class Roommates(commands.Cog):
 
     async def _gate(self, interaction: discord.Interaction) -> tuple[discord.Member | None, str | None]:
         if not self._s("roommate_enabled"):
-            return None, "The roommate finder is napping right now (not switched on)."
+            return None, "The roommate finder is currently switched off."
         if not self._adult_configured():
             return None, "The roommate finder isn't fully set up yet, an admin still needs to set the 18+ role(s)."
         member = interaction.user if isinstance(interaction.user, discord.Member) else await self._member(interaction.user.id)
         if not self._is_adult(member):
-            return None, "🔞 The roommate finder is for age-verified (18+) fluffs only."
+            return None, "🔞 The roommate finder is for age-verified (18+) members only."
         return member, None
 
     # ---- listing storage -------------------------------------------------
@@ -791,14 +791,14 @@ class Roommates(commands.Cog):
         """Return an error message if the dates aren't specific / in window, else None."""
         if not _has_specific_date(text):
             return ("📅 Please enter **specific dates** like `Jul 2-5, 2026`, not just weekday names, so I can "
-                    "line up everyone's availability. 🐾")
+                    "line up everyone's availability.")
         win = self._con_window(con)
         if win:
             start, end = win
             found = _extract_dates(text, start.year)
             if found and not any(start <= d <= end for d in found):
                 return (f"📅 Those dates look outside **{con}** ({start.isoformat()} to {end.isoformat()}). "
-                        "Double-check and try again. 🐾")
+                        "Double-check and try again.")
         return None
 
     async def finalize_listing(self, interaction, user_id, sel, kind, role,
@@ -813,7 +813,7 @@ class Roommates(commands.Cog):
         if is_host:
             if not cap_raw.isdigit() or not (MIN_CAP <= int(cap_raw) <= MAX_CAP):
                 await interaction.response.send_message(
-                    f"Pop in a whole number of spots between **{MIN_CAP} and {MAX_CAP}**, then try again. 🐾",
+                    f"Enter a whole number of spots between **{MIN_CAP} and {MAX_CAP}**, then try again.",
                     ephemeral=True,
                 )
                 return
@@ -831,13 +831,13 @@ class Roommates(commands.Cog):
         if need21 and not self._can_host_carpool(member):
             await interaction.response.send_message(
                 "🚗 You've gotta be **21+** (in the 20-29 band or older) to **host a carpool**. You can still hop "
-                "in as a carpool passenger, or host/join a hotel room. 🐾", ephemeral=True,
+                "in as a carpool passenger, or host/join a hotel room.", ephemeral=True,
             )
             return
         if (need21 and "21" not in confirm) or (not need21 and not ("18" in confirm or "21" in confirm)):
             await interaction.response.send_message(
-                "I couldn't confirm your age from that, so nothing got saved. Give it another go and type "
-                f"**{'21' if need21 else '18'}** to confirm. 🐾", ephemeral=True,
+                "I couldn't confirm your age from that, so nothing got saved. Please try again and type "
+                f"**{'21' if need21 else '18'}** to confirm.", ephemeral=True,
             )
             return
         # Privacy guard: no addresses / phone numbers (interest gathering only).
@@ -845,7 +845,7 @@ class Roommates(commands.Cog):
             await interaction.response.send_message(
                 "🔒 Keep **addresses and personal info out** of your listing please, these posts are just for "
                 "rounding up interest. Swap exact pickup spots and contact details in a private DM or group chat "
-                "**after** you match. Scrub those out and try again. 🐾", ephemeral=True,
+                "**after** you match. Scrub those out and try again.", ephemeral=True,
             )
             return
 
@@ -869,11 +869,11 @@ class Roommates(commands.Cog):
 
         verb = "updated" if existing else "saved"
         await interaction.followup.send(
-            f"{'🔄' if existing else '🎉'} {'Updated' if existing else 'Woohoo, you are in!'} "
+            f"{'🔄' if existing else '🎉'} {'Updated' if existing else 'You are all set!'} "
             f"Your **{_kind_label(kind)}** listing for **{con}** "
             f"({'hosting' if role == 'host' else 'looking to join'}) is {'updated' if existing else 'live'}. "
-            "I'll DM you the moment I sniff out a match! "
-            "Make sure your **DMs are open** to server members so I can reach you. 🐾",
+            "I'll message you the moment I find a match. "
+            "Please keep your **DMs open** to server members so I can reach you. ^w^",
             ephemeral=True,
         )
 
@@ -906,7 +906,7 @@ class Roommates(commands.Cog):
         if not self._has_agreed(interaction.user.id):
             await interaction.response.send_message(
                 self._rules_text()
-                + "\n\nBy tapping **✅ I agree** below you confirm you've read and accept these rules. 🐾",
+                + "\n\nBy tapping **✅ I agree** below you confirm you've read and accept these rules.",
                 view=RulesAgreeView(self, interaction.user.id, existing),
                 ephemeral=True,
             )
@@ -930,7 +930,7 @@ class Roommates(commands.Cog):
         mine = self._user_listings(interaction.user.id)
         if not mine:
             await interaction.response.send_message(
-                "You don't have any listings to edit yet. Tap **🛏️ Register** to make one! 🐾", ephemeral=True
+                "You don't have any listings to edit yet. Tap **🛏️ Register** to make one!", ephemeral=True
             )
             return
         view = discord.ui.View(timeout=300)
@@ -1024,7 +1024,7 @@ class Roommates(commands.Cog):
             view = discord.ui.View(timeout=300)
             view.add_item(reg_btn)
             await interaction.response.edit_message(
-                content=f"No listings for **{con}** yet — be the first! 🐾\n"
+                content=f"No listings for **{con}** yet — be the first!\n"
                         "Register below and I'll match you the moment someone else signs up.",
                 view=view,
             )
@@ -1034,8 +1034,8 @@ class Roommates(commands.Cog):
             band = "/".join(l.get("own_bands") or []) or "18+"
             lines.append(f"• **{l['id'][:4].upper()}** {'🚗' if l['kind']=='carpool' else '🏨'} "
                          f"{'host' if l['role']=='host' else 'join'}, {_cap_str(l)}, age {band}")
-        lines.append("\nPick one below to wag your interest. They'll get an anonymous heads up with your answers, "
-                     "and if you both say yes I'll introduce you. 🐾")
+        lines.append("\nSelect one below to express interest. They'll receive an anonymous summary of your answers, "
+                     "and if you both say yes I'll introduce you.")
         view = discord.ui.View(timeout=600)
         view.add_item(_InterestSelect(self, user_id, listings))
         await interaction.response.edit_message(content="\n".join(lines)[:1900], view=view)
@@ -1065,7 +1065,7 @@ class Roommates(commands.Cog):
                     view = discord.ui.View(timeout=300)
                     view.add_item(reg_btn)
                     await interaction.response.send_message(
-                        f"No listings for **{con}** yet — be the first! 🐾\n"
+                        f"No listings for **{con}** yet — be the first!\n"
                         "Register below and I'll match you the moment someone else signs up.",
                         view=view, ephemeral=True,
                     )
@@ -1076,7 +1076,7 @@ class Roommates(commands.Cog):
                         band = "/".join(l.get("own_bands") or []) or "18+"
                         lines.append(f"• **{l['id'][:4].upper()}** {'🚗' if l['kind']=='carpool' else '🏨'} "
                                      f"{'host' if l['role']=='host' else 'join'}, {_cap_str(l)}, age {band}")
-                    lines.append("\nPick one below to wag your interest. 🐾")
+                    lines.append("\nSelect one below to express interest.")
                     view = discord.ui.View(timeout=600)
                     view.add_item(_InterestSelect(self, user_id, hits))
                     await interaction.response.send_message("\n".join(lines)[:1900], view=view, ephemeral=True)
@@ -1085,7 +1085,7 @@ class Roommates(commands.Cog):
             cons = self._cons()
             cons_hint = f"\n\nAvailable cons: {', '.join(cons[:20])}" if cons else ""
             await interaction.response.send_message(
-                f"Nothing matched **{query}**. Try a con name (e.g. `Anthrocon`) or register your own listing! 🐾"
+                f"Nothing matched **{query}**. Try a con name (e.g. `Anthrocon`) or register your own listing!"
                 + cons_hint,
                 ephemeral=True,
             )
@@ -1097,7 +1097,7 @@ class Roommates(commands.Cog):
             band = "/".join(l.get("own_bands") or []) or "18+"
             lines.append(f"• **{l['id'][:4].upper()}** {l['con']}, {'🚗' if l['kind']=='carpool' else '🏨'} "
                          f"{'host' if l['role']=='host' else 'join'}, age {band}")
-        lines.append("\nPick one below to wag your interest (you'll need your own compatible listing for that con).")
+        lines.append("\nSelect one below to express interest (you'll need your own compatible listing for that con).")
         view = discord.ui.View(timeout=600)
         view.add_item(_InterestSelect(self, user_id, hits))
         await interaction.response.send_message("\n".join(lines)[:1900], view=view, ephemeral=True)
@@ -1304,14 +1304,14 @@ class Roommates(commands.Cog):
             return
         kind = _kind_label(o["kind"])
         if o.get("host") == uid:
-            lead = f"🐾 Hey! Exciting news — someone wants to join your **{kind}** for **{o['con']}**! Here's a peek at them (no names yet):"
+            lead = f"Good news — someone would like to join your **{kind}** for **{o['con']}**! Here are their details (no names yet):"
             tail = ("As the host it's **totally your call** — approve or pass, no pressure and no need to explain. "
                     "If you both say yes, I'll introduce you! 🎉")
         elif o.get("host") == other:
-            lead = f"🐾 Hey! I found a **{kind}** host for **{o['con']}** that looks like a great fit! Here's their setup (no names yet):"
+            lead = f"I found a **{kind}** host for **{o['con']}** that looks like a strong fit. Here are their details (no names yet):"
             tail = "Interested? Hit Yes and I'll ask the host too — if you're both in, I'll make the intro! 🎉"
         else:
-            lead = f"🐾 Hey! I sniffed out a possible **roommate match** for **{o['con']}**! Here's about them (no names yet):"
+            lead = f"I found a possible **roommate match** for **{o['con']}**. Here are their details (no names yet):"
             tail = "If you're both interested, I'll introduce you! 🎉"
         try:
             await member.send(f"{lead}\n\n{self._anon_summary(lst)}\n\n{tail}", view=build_offer_view(o["id"]))
@@ -1329,22 +1329,22 @@ class Roommates(commands.Cog):
             "Sort out **check-in/out days**, the **hotel**, and how you're splitting the room. "
         )
         note = (
-            "\n\nNext up: scurry into **DMs or a private group chat** to plan. " + coord +
+            "\n\nNext, move to **DMs or a private group chat** to plan. " + coord +
             "A few reminders: the host has the final say on the group, keep **addresses and personal info out of "
             "public channels**, name your space limit so nobody's squished (mind the fursuit luggage!), and "
             "remember **this server isn't responsible** for planning, mishaps, or theft. Use your best judgement "
-            "and keep your tail safe. 🐾"
+            "and stay safe."
         )
         if m1:
             who = f"{m2.mention} (`{m2}`)" if m2 else f"<@{o['u2']}>"
             try:
-                await m1.send(f"🎉 **It's a match for {con}!** You both said yes — say hi to {who}! 🐾" + note)
+                await m1.send(f"🎉 **It's a match for {con}!** You both said yes — say hello to {who}. ^w^" + note)
             except discord.HTTPException:
                 pass
         if m2:
             who = f"{m1.mention} (`{m1}`)" if m1 else f"<@{o['u1']}>"
             try:
-                await m2.send(f"🎉 **It's a match for {con}!** You both said yes — say hi to {who}! 🐾" + note)
+                await m2.send(f"🎉 **It's a match for {con}!** You both said yes — say hello to {who}. ^w^" + note)
             except discord.HTTPException:
                 pass
 
@@ -1405,10 +1405,10 @@ class Roommates(commands.Cog):
             return
         target = self._all_listings().get(listing_id)
         if not target or target.get("status") != "open":
-            await interaction.followup.send("That listing scampered off (no longer available).", ephemeral=True)
+            await interaction.followup.send("That listing is no longer available.", ephemeral=True)
             return
         if target["user_id"] == user_id:
-            await interaction.followup.send("That's your own listing, silly. 🙂", ephemeral=True)
+            await interaction.followup.send("That's your own listing.", ephemeral=True)
             return
         if target["user_id"] in set(self.store.get(OPTOUT, [])):
             await interaction.followup.send("That member isn't taking new suggestions right now.", ephemeral=True)
@@ -1418,7 +1418,7 @@ class Roommates(commands.Cog):
             await interaction.followup.send(
                 f"You'll need your own compatible **{_kind_label(target['kind'])}** listing for "
                 f"**{target['con']}** first so they can see what you're after. Tap **🛏️ Register**, then try "
-                "again. 🐾", ephemeral=True,
+                "again.", ephemeral=True,
             )
             return
         if not self._age_compatible(mine, self._bands_for(mine, member), target, self._bands_for(target, None)):
@@ -1431,7 +1431,7 @@ class Roommates(commands.Cog):
             return
         for o in self.store.get(OFFERS, {}).values():
             if {o["u1"], o["u2"]} == {user_id, target["user_id"]} and o["con"] == target["con"] and o["kind"] == target["kind"]:
-                await interaction.followup.send("There's already a connection brewing here. 🐾", ephemeral=True)
+                await interaction.followup.send("There's already a connection in progress here.", ephemeral=True)
                 return
         oid = _short()
         host = target["user_id"] if target["role"] == "host" else (user_id if mine["role"] == "host" else 0)
@@ -1445,7 +1445,7 @@ class Roommates(commands.Cog):
         await self.store.set(OFFERS, offers)
         await interaction.followup.send(
             "📨 Sent! They'll get an **anonymous** heads up with your answers. If they're in too, I'll introduce "
-            "you both, and I won't share your name unless you both say yes. 🐾", ephemeral=True,
+            "you both, and I won't share your name unless you both say yes.", ephemeral=True,
         )
         await self._advance(oid)
 
@@ -1466,17 +1466,17 @@ class Roommates(commands.Cog):
         elif uid == o["u2"]:
             side = 2
         else:
-            await interaction.followup.send("This isn't for you, friend.", ephemeral=True)
+            await interaction.followup.send("This isn't for you.", ephemeral=True)
             return
         if o[f"s{side}"] != "pending":
-            await self._safe_edit(interaction, "You've already answered this one. 🐾")
+            await self._safe_edit(interaction, "You've already answered this one.")
             return
 
         if act == "stop":
             await self._optout(uid)
             o[f"s{side}"] = "no"
             await self.store.set(OFFERS, offers)
-            await self._safe_edit(interaction, "🚫 You got it, I won't suggest matches to you again. Run `/roommate find` anytime to hop back in.")
+            await self._safe_edit(interaction, "🚫 You got it, I won't suggest matches to you again. Run `/roommate find` anytime to rejoin.")
             await self._advance(oid)
             return
         if act == "no":
@@ -1488,7 +1488,7 @@ class Roommates(commands.Cog):
 
         member = await self._member(uid)
         if not self._is_adult(member):
-            await self._safe_edit(interaction, "I can only connect age-verified (18+) fluffs.")
+            await self._safe_edit(interaction, "I can only connect age-verified (18+) members.")
             return
         o[f"s{side}"] = "yes"
         await self.store.set(OFFERS, offers)
@@ -1498,7 +1498,7 @@ class Roommates(commands.Cog):
             await self._safe_edit(
                 interaction,
                 "✅ Yay! I've reached out to them anonymously. If they're in too, I'll introduce you both, "
-                "still no names until you both say yes. 🐾",
+                "still no names until you both say yes.",
             )
         await self._advance(oid)
 
@@ -1530,7 +1530,7 @@ class Roommates(commands.Cog):
         else:
             lines.append("_No open listings yet. Tap **🛏️ Register** to make one!_")
         if user_id in set(self.store.get(OPTOUT, [])):
-            lines.append("\n🚫 You're opted out of new suggestions (registering hops you back in).")
+            lines.append("\n🚫 You're opted out of new suggestions (registering re-enables suggestions).")
         await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
 
         awaiting = []
@@ -1719,7 +1719,7 @@ class Roommates(commands.Cog):
         await interaction.followup.send(
             f"✅ Scanned {ch.mention}: found **{len(names)}** title(s), added **{len(added)}** new con(s). "
             f"There are now **{len(self._cons())}** cons total."
-            + (f"\n\n**Added:** {preview}" if added else "\n\nNothing new, the list was already up to date. 🐾"),
+            + (f"\n\n**Added:** {preview}" if added else "\n\nNothing new, the list was already up to date."),
             ephemeral=True,
         )
 
@@ -1748,7 +1748,7 @@ class Roommates(commands.Cog):
             "🧪 **Heads up — this finder is in beta.** It's still being polished, so you might hit the odd "
             "rough edge. Please flag anything weird to staff!\n\n"
             "**General**\n"
-            "• We love seeing fluffs go to cons together, but **this server is not responsible** for any wrongful "
+            "• We love seeing members go to cons together, but **this server is not responsible** for any wrongful "
             "planning, incidents, or theft. Use your best judgement, your safety comes first.\n\n"
             "**Joining**\n"
             "• Do **not** share personal info or your address here.\n"
@@ -1759,10 +1759,10 @@ class Roommates(commands.Cog):
             "• Name your space limit so nobody's overcrowded (mind the luggage and fursuit room in a car!).\n\n"
             "**Fine print**\n"
             "• As the host you're in charge of your group and responsible for transport and hotel rentals.\n"
-            "• Say how many fluffs you can fit (e.g. \"car holds 5, mind the trunk!\").\n"
+            "• Say how many people you can fit (e.g. \"car holds 5, mind the trunk!\").\n"
             "• Coordinate ahead of time: the days you're staying and the hotel you're sharing.\n"
             "• These posts are for **gathering interest only**, take further planning to a DM or private group chat.\n"
-            "• Hosts have the **full right to decline** anyone they're not comfy with, please don't argue. 🐾\n"
+            "• Hosts have the **full right to decline** anyone they're not comfy with, please don't argue.\n"
         )
 
     def _hub_embed(self) -> discord.Embed:
@@ -1770,13 +1770,13 @@ class Roommates(commands.Cog):
             title="🛏️🚗 NYFurs Con Roommate & Carpool Finder",
             description=(
                 "🧪 **Beta:** This finder is brand new and still being polished — things may be a little wobbly. "
-                "If anything acts up, please let staff know! 🐾\n\n"
-                "Heading to a con? I can privately pair you with another NYFurs fluff to **share a hotel room** or "
-                "**carpool**, safely and anonymously. 🐾\n\n"
+                "If anything acts up, please let staff know!\n\n"
+                "Heading to a con? I can privately pair you with another NYFurs member to **share a hotel room** or "
+                "**carpool**, safely and anonymously.\n\n"
                 "**How it works**\n"
                 "1. **Register** your room or ride: hotel or carpool, hosting or joining, con, which hotel, "
                 "headcount, age range, dates and details.\n"
-                "2. I sniff around for a compatible buddy and **reach out the moment I find one**, sharing their "
+                "2. I look for a compatible match and **reach out the moment I find one**, sharing their "
                 "*answers, never their name*.\n"
                 "3. You each tap **Yes / Pass**. Hosts have the final say and can decline freely.\n"
                 "4. Only when you **both say yes** do I introduce you, then take it to DMs.\n\n"
