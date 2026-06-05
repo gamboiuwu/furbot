@@ -930,18 +930,6 @@ class Onboarding(commands.Cog, MemberActions):
                 f"({len(due_remind)} awaiting reminder, {len(due_kick)} past grace)."
             )
 
-        # Nothing left to do? Turn auto mode OFF so the loop stops working.
-        # "Nothing left" = no one awaiting a reminder, no one past grace, and
-        # no one still inside their grace window (the reminded list is empty
-        # after pruning verified/left members).
-        await self._prune(guild)
-        due_remind2, due_kick2 = self._compute(guild)
-        if not due_remind2 and not due_kick2 and not self.store.get(REMINDED, {}):
-            await self.settings.set("onboarding_auto", False)
-            await self._log_action(
-                "✅ Onboarding backlog cleared — **auto mode turned OFF** automatically."
-            )
-
     @auto_loop.before_loop
     async def _before_auto(self) -> None:
         await self.bot.wait_until_ready()
