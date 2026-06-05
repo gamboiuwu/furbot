@@ -101,14 +101,43 @@ class Suggestions(commands.Cog):
         if str(thread.id) in polls:
             return
         active = int(self._s("suggestions_active_days") or 14)
-        msg = (
-            "✅ **Suggestion received — thank you!**\n"
-            f"This stays open for discussion for **{active} days**, then I'll post a final "
-            "**Yes / No** poll right here that runs for another 2 weeks. If it passes, it goes "
-            "to the staff to-do list. owo"
+        poll_days = int(self._s("suggestions_poll_days") or 14)
+        deadline_days = int(self._s("suggestions_deadline_days") or 14)
+        owner = thread.owner.mention if thread.owner else (f"<@{thread.owner_id}>" if thread.owner_id else "there")
+
+        embed = discord.Embed(
+            title="✅ Suggestion received — thank you!",
+            description=(
+                f"Hi {owner}, thanks for taking the time to share this! Here's exactly what "
+                "happens next, so you know what to expect:"
+            ),
+            color=discord.Color.blurple(),
         )
+        embed.add_field(
+            name=f"1️⃣ Open for discussion — {active} days",
+            value=("This thread stays open so everyone can weigh in, ask questions, and help "
+                   "refine the idea. Feel free to add any extra detail in the meantime."),
+            inline=False,
+        )
+        embed.add_field(
+            name=f"2️⃣ Final vote — {poll_days} days",
+            value=(f"After **{active} days**, I'll post a **Yes / No** poll right here. It stays "
+                   f"open for another **{poll_days} days** for the community to decide."),
+            inline=False,
+        )
+        embed.add_field(
+            name="3️⃣ If it passes",
+            value=(f"If the majority votes **Yes**, I hand it to the staff to-do list with a "
+                   f"**{deadline_days}-day** deadline — and I keep nudging staff until it's done."),
+            inline=False,
+        )
+        embed.set_footer(text="You don't need to do anything else — I'll keep this thread updated. ^w^")
         try:
-            await thread.send(msg)
+            await thread.send(
+                content=owner if thread.owner_id else None,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
         except discord.HTTPException:
             log.info("Could not post suggestion confirmation in %s", thread.id)
 
