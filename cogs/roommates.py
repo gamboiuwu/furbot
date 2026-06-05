@@ -279,8 +279,10 @@ class RulesAgreeView(discord.ui.View):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This form isn't yours, friend.", ephemeral=True)
             return
-        await self.cog._record_agreement(self.user_id)
+        # Open the form first (acknowledges the click), then persist agreement —
+        # the WebDAV write must not delay the interaction response past 3s.
         await self.cog._open_registration(interaction, self.existing, edit=True)
+        await self.cog._record_agreement(self.user_id)
 
 
 class _ChoiceSelect(discord.ui.Select):
@@ -1394,39 +1396,42 @@ class Roommates(commands.Cog):
     # ---- expressing interest (user-initiated) ---------------------------
 
     async def express_interest(self, interaction: discord.Interaction, user_id: int, listing_id: str) -> None:
+        # Acknowledge immediately so the WebDAV write near the end can't blow the
+        # 3-second interaction window (this was the "interaction failed" cause).
+        await interaction.response.defer(ephemeral=True)
         member, err = await self._gate(interaction)
         if err:
-            await interaction.response.send_message(err, ephemeral=True)
+            await interaction.followup.send(err, ephemeral=True)
             return
         target = self._all_listings().get(listing_id)
         if not target or target.get("status") != "open":
-            await interaction.response.send_message("That listing scampered off (no longer available).", ephemeral=True)
+            await interaction.followup.send("That listing scampered off (no longer available).", ephemeral=True)
             return
         if target["user_id"] == user_id:
-            await interaction.response.send_message("That's your own listing, silly. 🙂", ephemeral=True)
+            await interaction.followup.send("That's your own listing, silly. 🙂", ephemeral=True)
             return
         if target["user_id"] in set(self.store.get(OPTOUT, [])):
-            await interaction.response.send_message("That member isn't taking new suggestions right now.", ephemeral=True)
+            await interaction.followup.send("That member isn't taking new suggestions right now.", ephemeral=True)
             return
         mine = next((m for m in self._user_listings(user_id) if self._valid_pair(m, target)), None)
         if not mine:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"You'll need your own compatible **{_kind_label(target['kind'])}** listing for "
                 f"**{target['con']}** first so they can see what you're after. Tap **🛏️ Register**, then try "
                 "again. 🐾", ephemeral=True,
             )
             return
         if not self._age_compatible(mine, self._bands_for(mine, member), target, self._bands_for(target, None)):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Your age-range picks don't line up with this listing, so I can't connect you here.", ephemeral=True
             )
             return
         if self._pair_key(user_id, target["user_id"], target["con"], target["kind"]) in self.store.get(DECLINED, {}):
-            await interaction.response.send_message("You two already passed on each other for this one.", ephemeral=True)
+            await interaction.followup.send("You two already passed on each other for this one.", ephemeral=True)
             return
         for o in self.store.get(OFFERS, {}).values():
             if {o["u1"], o["u2"]} == {user_id, target["user_id"]} and o["con"] == target["con"] and o["kind"] == target["kind"]:
-                await interaction.response.send_message("There's already a connection brewing here. 🐾", ephemeral=True)
+                await interaction.followup.send("There's already a connection brewing here. 🐾", ephemeral=True)
                 return
         oid = _short()
         host = target["user_id"] if target["role"] == "host" else (user_id if mine["role"] == "host" else 0)
@@ -1438,7 +1443,7 @@ class Roommates(commands.Cog):
             "revealed": False, "created_at": int(time.time()),
         }
         await self.store.set(OFFERS, offers)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "📨 Sent! They'll get an **anonymous** heads up with your answers. If they're in too, I'll introduce "
             "you both, and I won't share your name unless you both say yes. 🐾", ephemeral=True,
         )
@@ -1447,6 +1452,9 @@ class Roommates(commands.Cog):
     # ---- responding to an offer -----------------------------------------
 
     async def handle_offer(self, interaction: discord.Interaction, oid: str, act: str) -> None:
+        # Acknowledge immediately — the store writes below can take a few seconds
+        # on the live bot, which would otherwise blow Discord's 3-second window.
+        await interaction.response.defer()
         offers = dict(self.store.get(OFFERS, {}))
         o = offers.get(oid)
         if not o:
@@ -1458,7 +1466,7 @@ class Roommates(commands.Cog):
         elif uid == o["u2"]:
             side = 2
         else:
-            await interaction.response.send_message("This isn't for you, friend.", ephemeral=True)
+            await interaction.followup.send("This isn't for you, friend.", ephemeral=True)
             return
         if o[f"s{side}"] != "pending":
             await self._safe_edit(interaction, "You've already answered this one. 🐾")
@@ -1497,10 +1505,14 @@ class Roommates(commands.Cog):
     @staticmethod
     async def _safe_edit(interaction: discord.Interaction, content: str) -> None:
         try:
-            await interaction.response.edit_message(content=content, view=None)
+            if interaction.response.is_done():
+                # Already acknowledged (e.g. we deferred first) — edit the original.
+                await interaction.edit_original_response(content=content, view=None)
+            else:
+                await interaction.response.edit_message(content=content, view=None)
         except discord.HTTPException:
             try:
-                await interaction.response.send_message(content, ephemeral=True)
+                await interaction.followup.send(content, ephemeral=True)
             except discord.HTTPException:
                 pass
 
@@ -1619,10 +1631,12 @@ class Roommates(commands.Cog):
         await interaction.response.send_message("Pick the listing to cancel:", view=view, ephemeral=True)
 
     async def _cancel_listing(self, interaction: discord.Interaction, user_id: int, listing_id: str) -> None:
+        # Acknowledge first — several store writes follow that can exceed 3s live.
+        await interaction.response.defer()
         listings = dict(self._all_listings())
         lst = listings.get(listing_id)
         if not lst or lst.get("user_id") != user_id:
-            await interaction.response.edit_message(content="That listing isn't yours or is already gone.", view=None)
+            await interaction.edit_original_response(content="That listing isn't yours or is already gone.", view=None)
             return
         con, kind = lst["con"], lst["kind"]
         listings.pop(listing_id, None)
@@ -1635,7 +1649,7 @@ class Roommates(commands.Cog):
                     if o["con"] == con and o["kind"] == kind and user_id in (o["u1"], o["u2"]) and not o.get("revealed")]:
             offers.pop(oid, None)
         await self.store.set(OFFERS, offers)
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"🗑️ Cancelled your {_kind_label(kind)} listing for **{con}**.", view=None
         )
 
