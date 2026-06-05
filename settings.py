@@ -113,6 +113,10 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "roommate_match_interval_hours": (int, 6,   "Safety-net sweep interval (hours) — matching is mostly immediate on registration."),
     "roommate_cons_channel_id":  (int,   1173049058856816772, "Forum/channel scanned by /roommate importcons to auto-add con names."),
     "roommate_con_dates":        (str,   "", "Optional con date windows for validation, e.g. 'Anthrocon: 2026-07-02..2026-07-05; FurDU: 2026-04-24..2026-04-27'."),
+    "reports_enabled":           (bool,  False, "Master switch for the member safety-report button."),
+    "reports_channel_id":        (int,   0,     "Private staff channel where safety reports are posted (staff-only access)."),
+    "reports_role_id":           (int,   0,     "Role pinged when a safety report is filed (e.g. Safety Team). 0 = no ping."),
+    "reports_hub_channel_id":    (int,   0,     "Channel where the pinned 'Report' button lives (/report setup)."),
 }
 
 

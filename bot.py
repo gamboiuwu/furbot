@@ -53,6 +53,7 @@ INITIAL_COGS = (
     "cogs.slurwatch",
     "cogs.argument",
     "cogs.roommates",
+    "cogs.reports",
 )
 
 
@@ -117,6 +118,7 @@ class FurBot(commands.Bot):
         from cogs.onboarding import BatchConfirmView, ModActionButton, PhoneReviewButton, WaitingButton
         from cogs.review import ReviewButton, ReviewConsentButton, ReviewOptOutButton
         from cogs.roommates import HubView, OfferButton
+        from cogs.reports import ReportHubView
         self.add_dynamic_items(
             WaitingButton, PhoneReviewButton, ModActionButton,
             ReviewButton, ReviewConsentButton, ReviewOptOutButton,
@@ -124,6 +126,7 @@ class FurBot(commands.Bot):
         )
         self.add_view(BatchConfirmView(self))
         self.add_view(HubView())
+        self.add_view(ReportHubView())
 
         # Register slash commands. If a guild ID is configured we sync to
         # that guild for instant availability; otherwise we sync globally
