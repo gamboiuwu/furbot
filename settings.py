@@ -129,6 +129,53 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
 }
 
 
+# Settings grouped into categories so /config is easy to navigate. Each key is
+# matched to the FIRST group whose prefixes it starts with; anything unmatched
+# falls into "Other". Order here is the order shown in /config view.
+SETTING_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("🚪", "Onboarding",        ("onboarding_", "invite_link")),
+    ("✅", "Verification",      ("verify_", "warn_")),
+    ("🛡️", "Join risk & raids", ("risk_",)),
+    ("👋", "Welcome & points",  ("welcome_", "blocked_")),
+    ("🎂", "Birthdays",         ("birthday_",)),
+    ("🏆", "Leaderboard",       ("leaderboard_",)),
+    ("🎨", "Commission watch",  ("commission_",)),
+    ("📋", "Member check-in",   ("review_", "feedback_")),
+    ("📌", "Staff tasks",       ("task_",)),
+    ("📅", "Events",            ("indico_", "events_")),
+    ("📜", "DM relay & logging", ("dm_relay_", "member_log_")),
+    ("🎉", "Fun & chatter",     ("hi_", "argument_", "slur_")),
+    ("🛏️", "Roommate finder",   ("roommate_",)),
+    ("🚨", "Safety reports",    ("reports_",)),
+    ("🗳️", "Suggestion box",    ("suggestions_",)),
+]
+
+
+def group_of(key: str) -> str:
+    """Return the category NAME (no emoji) a setting key belongs to."""
+    for _emoji, name, prefixes in SETTING_GROUPS:
+        if key.startswith(prefixes):
+            return name
+    return "Other"
+
+
+def group_label(name: str) -> str:
+    """'emoji name' label for a category name (name itself if unknown)."""
+    for emoji, gname, _ in SETTING_GROUPS:
+        if gname == name:
+            return f"{emoji} {gname}"
+    return name
+
+
+def grouped_settings() -> dict[str, list[str]]:
+    """Ordered {category name: [keys]} for every registered setting (no empties)."""
+    out: dict[str, list[str]] = {name: [] for _e, name, _p in SETTING_GROUPS}
+    out["Other"] = []
+    for key in SETTINGS:
+        out[group_of(key)].append(key)
+    return {name: keys for name, keys in out.items() if keys}
+
+
 def _coerce(typ: type, raw):
     if typ is bool:
         return str(raw).strip().lower() in ("1", "true", "yes", "on", "y")

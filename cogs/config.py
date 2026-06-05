@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from checks import NotStaff, is_staff
-from settings import SETTINGS
+from settings import SETTINGS, grouped_settings, group_label
 
 log = logging.getLogger("furbot.config")
 
@@ -33,21 +33,72 @@ class ConfigCog(commands.Cog):
             if cur in key
         ][:25]
 
-    @group.command(name="view", description="Show all settings and their current values.")
+    async def _category_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        cur = current.lower()
+        return [
+            app_commands.Choice(name=group_label(name), value=name)
+            for name in grouped_settings()
+            if cur in name.lower()
+        ][:25]
+
+    @staticmethod
+    def _short_val(value) -> str:
+        """Compact one-line representation of a setting value for the overview."""
+        if value == "":
+            return "(empty)"
+        s = repr(value)
+        return s if len(s) <= 48 else s[:45] + "…'"
+
+    @group.command(name="view", description="Show settings by category (pick a category for full detail).")
+    @app_commands.describe(category="Optional: show full detail for just one category")
+    @app_commands.autocomplete(category=_category_autocomplete)
     @is_staff()
-    async def view(self, interaction: discord.Interaction) -> None:
+    async def view(self, interaction: discord.Interaction, category: str | None = None) -> None:
         settings = self.bot.settings
-        embed = discord.Embed(title="⚙️ FurBot settings", color=discord.Color.blurple())
-        for key, (typ, default, help_text) in SETTINGS.items():
-            value = settings.get(key)
-            source = settings.source(key)
-            shown = repr(value) if value != "" else "(empty)"
-            embed.add_field(
-                name=key,
-                value=f"**{shown}**  ·  _{source}_\n{help_text}\n`default: {default!r}`",
-                inline=False,
-            )
-        embed.set_footer(text="Change with /config set <key> <value> — saved to Nextcloud.")
+        groups = grouped_settings()
+
+        # Detail view for a single category.
+        if category:
+            match = next((n for n in groups if n.lower() == category.lower()), None)
+            if match is None:
+                match = next((n for n in groups if category.lower() in n.lower()), None)
+            if match is None:
+                await interaction.response.send_message(
+                    f"No category matches `{category}`. Try `/config view` to see them all.",
+                    ephemeral=True,
+                )
+                return
+            embed = discord.Embed(title=f"⚙️ {group_label(match)}", color=discord.Color.blurple())
+            for key in groups[match]:
+                typ, default, help_text = SETTINGS[key]
+                value = settings.get(key)
+                source = settings.source(key)
+                shown = repr(value) if value != "" else "(empty)"
+                embed.add_field(
+                    name=key,
+                    value=f"**{shown}**  ·  _{source}_\n{help_text}\n`default: {default!r}`",
+                    inline=False,
+                )
+            embed.set_footer(text="Change with /config set <key> <value> — saved to Nextcloud.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Overview: one compact field per category.
+        embed = discord.Embed(
+            title="⚙️ FurBot settings",
+            description="Grouped by feature. Use `/config view category:<name>` for full detail "
+                        "(help text + defaults), or `/config set <key> <value>` to change one.",
+            color=discord.Color.blurple(),
+        )
+        for name, keys in groups.items():
+            lines = [f"`{key}` = {self._short_val(settings.get(key))}" for key in keys]
+            body = "\n".join(lines)
+            if len(body) > 1024:
+                body = body[:1000].rsplit("\n", 1)[0] + "\n… (open this category for the rest)"
+            embed.add_field(name=group_label(name), value=body, inline=False)
+        embed.set_footer(text=f"{len(SETTINGS)} settings · {len(groups)} categories")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @group.command(name="set", description="Change a setting (saved to Nextcloud, applies live).")
