@@ -93,13 +93,25 @@ class Suggestions(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread) -> None:
+        want = int(self._s("suggestions_channel_id") or 0)
         if not self._s("suggestions_enabled"):
+            log.info("Suggestion thread %s created but suggestions_enabled is OFF.", thread.id)
             return
-        if thread.parent_id != int(self._s("suggestions_channel_id") or 0):
+        if thread.parent_id != want:
+            log.info("Thread %s created in channel %s, not the suggestion channel %s — ignoring.",
+                     thread.id, thread.parent_id, want)
             return
-        polls = self.store.get(POLLS, {})
-        if str(thread.id) in polls:
-            return
+        log.info("New suggestion thread %s (%r) — announcing.", thread.id, thread.name)
+        announced = await self._announce(thread)
+
+        def _mut(data: dict) -> None:
+            data.setdefault(POLLS, {})[str(thread.id)] = {
+                "announced": announced, "poll_id": 0, "poll_at": 0, "decided": False,
+            }
+        await self.store.update(_mut)
+
+    async def _announce(self, thread: discord.Thread) -> bool:
+        """Post the welcome/process message in a suggestion thread. Returns success."""
         active = int(self._s("suggestions_active_days") or 14)
         poll_days = int(self._s("suggestions_poll_days") or 14)
         deadline_days = int(self._s("suggestions_deadline_days") or 14)
@@ -132,20 +144,27 @@ class Suggestions(commands.Cog):
             inline=False,
         )
         embed.set_footer(text="You don't need to do anything else — I'll keep this thread updated. ^w^")
+
+        # Surface a clear reason if we can't post (the usual culprit is perms).
+        me = thread.guild.me if thread.guild else None
+        if me is not None:
+            perms = thread.permissions_for(me)
+            if not (perms.send_messages_in_threads and perms.view_channel):
+                log.warning(
+                    "Missing permission to post in suggestion thread %s — need 'View Channel' "
+                    "and 'Send Messages in Threads' in %s.", thread.id, thread.parent_id,
+                )
+                return False
         try:
             await thread.send(
                 content=owner if thread.owner_id else None,
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
             )
+            return True
         except discord.HTTPException:
-            log.info("Could not post suggestion confirmation in %s", thread.id)
-
-        def _mut(data: dict) -> None:
-            data.setdefault(POLLS, {})[str(thread.id)] = {
-                "announced": True, "poll_id": 0, "poll_at": 0, "decided": False,
-            }
-        await self.store.update(_mut)
+            log.exception("Could not post suggestion confirmation in %s", thread.id)
+            return False
 
     # ---- main loop -------------------------------------------------------
 
@@ -176,11 +195,21 @@ class Suggestions(commands.Cog):
             rec = polls.get(key)
             age = self._age_days(thread.created_at)
             if rec is None:
-                # First time we've seen it. Record silently; only treat as
-                # poll-eligible if it's not ancient (avoid resurrecting backlog).
-                rec = {"announced": True, "poll_id": 0, "poll_at": 0,
+                # First time we've seen it. Ancient threads are skipped (don't
+                # resurrect a backlog); fresher ones still need announcing.
+                rec = {"announced": False, "poll_id": 0, "poll_at": 0,
                        "decided": age > HISTORY_LOOKBACK}
                 polls[key] = rec
+                changed = True
+
+            # Fallback announcement: if the create event was missed (or the bot
+            # was offline at creation), announce threads still in the open phase.
+            if not rec.get("announced") and not rec.get("decided"):
+                if age < active:
+                    if await self._announce(thread):
+                        rec["announced"] = True
+                else:
+                    rec["announced"] = True  # too late to welcome; just mark it
                 changed = True
 
             if rec.get("decided") or rec.get("poll_id"):
