@@ -54,6 +54,7 @@ INITIAL_COGS = (
     "cogs.argument",
     "cogs.roommates",
     "cogs.reports",
+    "cogs.suggestions",
 )
 
 
