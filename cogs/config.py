@@ -88,6 +88,30 @@ class ConfigCog(commands.Cog):
         msg = f"↩️ `{key}` reset — now **{now!r}**." if removed else f"`{key}` had no override; it's **{now!r}**."
         await interaction.response.send_message(msg, ephemeral=True)
 
+    @group.command(name="save", description="Force-save every setting and a full config snapshot to Nextcloud now.")
+    @is_staff()
+    async def save_cmd(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        # Make sure settings.json lists every key, then write the full snapshot.
+        await self.bot.settings.initialize()
+        await self.bot.save_config_snapshot()
+        store = self.bot.store
+        if store.webdav is None:
+            detail = "saved locally — **Nextcloud isn't configured** (no WEBDAV_* env vars)"
+        else:
+            # Verify the snapshot actually reached the server by reading it back.
+            try:
+                raw = await store.webdav.download("config.json")
+                detail = "saved to **Nextcloud** ✅" if raw else (
+                    "saved locally, but **couldn't confirm** the Nextcloud copy — check the logs"
+                )
+            except Exception:
+                log.exception("Verifying Nextcloud save failed")
+                detail = "saved locally, but the **Nextcloud upload failed** — check WEBDAV_* creds/connection"
+        await interaction.followup.send(
+            f"💾 Saved **{len(SETTINGS)}** settings + full config snapshot — {detail}.", ephemeral=True
+        )
+
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ) -> None:
