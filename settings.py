@@ -117,6 +117,15 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "reports_channel_id":        (int,   0,     "Private staff channel where safety reports are posted (staff-only access)."),
     "reports_role_id":           (int,   0,     "Role pinged when a safety report is filed (e.g. Safety Team). 0 = no ping."),
     "reports_hub_channel_id":    (int,   0,     "Channel where the pinned 'Report' button lives (/report setup)."),
+    "suggestions_enabled":       (bool,  False, "Master switch for suggestion-box auto-polls and staff to-do follow-up."),
+    "suggestions_channel_id":    (int,   1211177177379242074, "Suggestion-box forum/channel whose threads get a final poll after 2 weeks."),
+    "suggestions_todo_channel_id": (int, 1272358508121034802, "Staff to-do forum/channel where approved suggestions are pushed."),
+    "suggestions_staff_role_id": (int,   0,     "Role pinged when a to-do is overdue (0 = use the staff role from config)."),
+    "suggestions_active_days":   (int,   14,    "Days a suggestion thread is open before its final poll is posted."),
+    "suggestions_poll_days":     (int,   14,    "How long the final Yes/No poll stays open (days, max 32)."),
+    "suggestions_deadline_days": (int,   14,    "Days after a to-do is created before the 'Live' tag is expected."),
+    "suggestions_ping_days":     (int,   3,     "How often (days) to ping staff about an overdue to-do until it's Live."),
+    "suggestions_live_tag":      (str,   "Live", "Forum tag name on the to-do channel that marks a task integrated/done."),
 }
 
 
