@@ -171,9 +171,35 @@ def _kind_label(kind: str) -> str:
     return "carpool" if kind == "carpool" else "hotel room"
 
 
+def _parse_open_total(raw: str) -> tuple[int, int] | None:
+    """Parse a host's headcount entry into (open_to_fill, total).
+
+    Accepts "1 of 4", "1/4", "1 out of 4", or a bare "1" (total then equals
+    the open count). Returns None if it can't find a sensible number.
+    """
+    raw = (raw or "").strip().lower()
+    m = re.search(r"(\d+)\s*(?:of|/|out of)\s*(\d+)", raw)
+    if m:
+        opened, total = int(m.group(1)), int(m.group(2))
+        return opened, total
+    m = re.search(r"\d+", raw)
+    if m:
+        n = int(m.group(0))
+        return n, n
+    return None
+
+
 def _cap_str(listing: dict) -> str:
-    c = listing.get("cap")
-    return f"{c} spots" if isinstance(c, int) else "open spot"
+    """Human label for a host's availability, e.g. '1 open of 4' or '2 spots'."""
+    total = listing.get("cap")
+    opened = listing.get("open")
+    if isinstance(opened, int) and isinstance(total, int) and opened != total:
+        return f"{opened} open of {total}"
+    if isinstance(opened, int):
+        return f"{opened} open" if opened != 1 else "1 spot open"
+    if isinstance(total, int):
+        return f"{total} spots"
+    return "open spot"
 
 
 # ============================ persistent UI ===================================
@@ -405,15 +431,29 @@ class RegistrationModal(discord.ui.Modal):
         # Hotel seekers have room for budget; carpools have no hotel field.
 
         # Headcount is only relevant for hosts — seekers take whatever's available.
+        # Hosts give the spots they still need to fill, optionally "of" the total
+        # (e.g. "1 of 4" = a 4-person room with one spot left). We prefill from a
+        # prior open/total if present.
         self.cap: discord.ui.TextInput | None = None
         if is_host:
+            if isinstance(e.get("open"), int) and isinstance(e.get("cap"), int) and e["open"] != e["cap"]:
+                cap_default = f"{e['open']} of {e['cap']}"
+            elif isinstance(e.get("open"), int):
+                cap_default = str(e["open"])
+            elif isinstance(e.get("cap"), int):
+                cap_default = str(e["cap"])
+            else:
+                cap_default = None
             self.cap = discord.ui.TextInput(
-                required=True, max_length=2, placeholder="e.g. 4",
-                default=str(e["cap"]) if isinstance(e.get("cap"), int) else None,
+                required=True, max_length=12,
+                placeholder=("e.g. 2 of 5" if carpool else "e.g. 1 of 4"),
+                default=cap_default,
             )
             self.add_item(discord.ui.Label(
-                text=f"How many spots? ({MIN_CAP}-{MAX_CAP} total)",
-                description=("Seats in the car, including you." if carpool else "People sharing the room, including you."),
+                text="Seats open to fill" if carpool else "Spots open to fill",
+                description=("How many seats you still need to fill — e.g. 2. Add the total too if you like: '2 of 5'."
+                             if carpool else
+                             "How many spots you still need to fill — e.g. 1. Add the room total too: '1 of 4'."),
                 component=self.cap,
             ))
 
@@ -809,17 +849,31 @@ class Roommates(commands.Cog):
             return
         con = sel["con"]
         # Headcount is only required from hosts; seekers take whatever's available.
+        # Hosts give the spots still open to fill, optionally "of" the room total.
         is_host = role == "host"
         if is_host:
-            if not cap_raw.isdigit() or not (MIN_CAP <= int(cap_raw) <= MAX_CAP):
+            parsed = _parse_open_total(cap_raw)
+            if parsed is None:
                 await interaction.response.send_message(
-                    f"Enter a whole number of spots between **{MIN_CAP} and {MAX_CAP}**, then try again.",
+                    "Enter how many spots are still open to fill — e.g. **1** or **1 of 4**.",
                     ephemeral=True,
                 )
                 return
-            cap: int | None = int(cap_raw)
+            spots_open, cap_total = parsed
+            if cap_total < spots_open:
+                cap_total = spots_open  # "of total" smaller than open makes no sense
+            if not (1 <= spots_open <= MAX_CAP) or not (MIN_CAP <= cap_total <= MAX_CAP):
+                await interaction.response.send_message(
+                    f"Spots should be between **1 and {MAX_CAP}** open, with a room total of "
+                    f"**{MIN_CAP}-{MAX_CAP}**. Try again — e.g. **1 of 4**.",
+                    ephemeral=True,
+                )
+                return
+            cap: int | None = cap_total
+            open_spots: int | None = spots_open
         else:
             cap = None
+            open_spots = None
         # Validate dates: require specific calendar dates (not just weekday names),
         # and, if staff configured a window for this con, that they fall inside it.
         date_err = self._validate_dates(dates, con)
@@ -858,7 +912,7 @@ class Roommates(commands.Cog):
         lid = existing["id"] if existing else _short()
         listings[lid] = {
             "id": lid, "user_id": user_id, "con": con, "kind": kind, "role": role,
-            "cap": cap, "age_prefs": sel.get("age") or "any",
+            "cap": cap, "open": open_spots, "age_prefs": sel.get("age") or "any",
             "own_bands": self._member_bands(member),
             "hotel": hotel, "area": area, "dates": dates, "budget": budget, "details": details,
             "status": "open",
@@ -1363,8 +1417,45 @@ class Roommates(commands.Cog):
             await self._reseek(o["u1"])
             await self._reseek(o["u2"])
         if matched:
-            await self._set_status(o["u1"], o["con"], o["kind"], "matched")
-            await self._set_status(o["u2"], o["con"], o["kind"], "matched")
+            host_id = o.get("host") or 0
+            for uid in (o["u1"], o["u2"]):
+                if uid == host_id:
+                    # A host filling several spots stays open until the room is full.
+                    remaining = await self._decrement_host_open(uid, o["con"], o["kind"])
+                    if remaining > 0:
+                        hm = await self._member(uid)
+                        if hm:
+                            try:
+                                await hm.send(
+                                    f"Your **{_kind_label(o['kind'])}** for **{o['con']}** still has "
+                                    f"**{remaining} spot{'s' if remaining != 1 else ''} open** — "
+                                    "I'll keep looking for more matches. ^w^"
+                                )
+                            except discord.HTTPException:
+                                pass
+                        await self._reseek(uid)  # immediately look for the next person
+                    else:
+                        await self._set_status(uid, o["con"], o["kind"], "matched")
+                else:
+                    await self._set_status(uid, o["con"], o["kind"], "matched")
+
+    async def _decrement_host_open(self, user_id: int, con: str, kind: str) -> int:
+        """Reduce a host listing's open spots by one after a match.
+
+        Returns the number of spots still open (0 if the room is now full or no
+        open count is tracked, in which case the caller closes the listing)."""
+        listings = dict(self._all_listings())
+        for l in listings.values():
+            if (l.get("user_id") == user_id and l.get("con") == con
+                    and l.get("kind") == kind and l.get("status") == "open"):
+                opened = l.get("open")
+                if not isinstance(opened, int):
+                    return 0
+                l["open"] = max(0, opened - 1)
+                l["updated_at"] = int(time.time())
+                await self.store.set(LISTINGS, listings)
+                return l["open"]
+        return 0
 
     async def _reseek(self, user_id: int) -> None:
         """After a pass, try to find a different compatible match for this member."""
