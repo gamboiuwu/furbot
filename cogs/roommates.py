@@ -46,6 +46,7 @@ DECLINED = "roommate_declined"
 OPTOUT = "roommate_optout"
 ARCHIVE = "roommate_archive"
 HUBMSG = "roommate_hub_msg"
+AGREED = "roommate_agreed"  # user_ids who accepted the rules (gate before any listing)
 
 MIN_CAP, MAX_CAP = 2, 15
 
@@ -249,6 +250,24 @@ class HubView(discord.ui.View):
 
 
 # ============================ registration flow ===============================
+
+class RulesAgreeView(discord.ui.View):
+    """Shown before a member's first listing — they must accept the rules."""
+
+    def __init__(self, cog: "Roommates", user_id: int, existing: dict | None = None) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.existing = existing
+
+    @discord.ui.button(label="✅ I agree — let's go", style=discord.ButtonStyle.success)
+    async def agree(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This form isn't yours, friend.", ephemeral=True)
+            return
+        await self.cog._record_agreement(self.user_id)
+        await self.cog._open_registration(interaction, self.existing, edit=True)
+
 
 class _ChoiceSelect(discord.ui.Select):
     """Single-choice select that writes one field on the parent RegistrationView."""
@@ -759,6 +778,15 @@ class Roommates(commands.Cog):
 
     # ---- hub button handlers --------------------------------------------
 
+    def _has_agreed(self, user_id: int) -> bool:
+        return user_id in set(self.store.get(AGREED, []))
+
+    async def _record_agreement(self, user_id: int) -> None:
+        agreed = list(self.store.get(AGREED, []))
+        if user_id not in agreed:
+            agreed.append(user_id)
+            await self.store.set(AGREED, agreed)
+
     async def hub_register(self, interaction: discord.Interaction, existing: dict | None = None) -> None:
         member, err = await self._gate(interaction)
         if err:
@@ -771,8 +799,25 @@ class Roommates(commands.Cog):
                 "`/config set roommate_cons \"Anthrocon, FurDU, ...\"` or `/roommate importcons`.", ephemeral=True,
             )
             return
-        view = RegistrationView(self, interaction.user.id, cons, self._age_bands(), existing)
-        await interaction.response.send_message(view.render(), view=view, ephemeral=True)
+        # Everyone must agree to the rules once before creating any listing.
+        if not self._has_agreed(interaction.user.id):
+            await interaction.response.send_message(
+                self._rules_text()
+                + "\n\nBy tapping **✅ I agree** below you confirm you've read and accept these rules. 🐾",
+                view=RulesAgreeView(self, interaction.user.id, existing),
+                ephemeral=True,
+            )
+            return
+        await self._open_registration(interaction, existing)
+
+    async def _open_registration(
+        self, interaction: discord.Interaction, existing: dict | None = None, *, edit: bool = False
+    ) -> None:
+        view = RegistrationView(self, interaction.user.id, self._cons(), self._age_bands(), existing)
+        if edit:
+            await interaction.response.edit_message(content=view.render(), view=view)
+        else:
+            await interaction.response.send_message(view.render(), view=view, ephemeral=True)
 
     async def hub_edit(self, interaction: discord.Interaction) -> None:
         member, err = await self._gate(interaction)
@@ -1573,6 +1618,8 @@ class Roommates(commands.Cog):
     def _rules_text(self) -> str:
         return (
             "📜 **NYFurs Roommate & Carpool Rules**\n\n"
+            "🧪 **Heads up — this finder is in beta.** It's still being polished, so you might hit the odd "
+            "rough edge. Please flag anything weird to staff!\n\n"
             "**General**\n"
             "• We love seeing fluffs go to cons together, but **this server is not responsible** for any wrongful "
             "planning, incidents, or theft. Use your best judgement, your safety comes first.\n\n"
@@ -1595,6 +1642,8 @@ class Roommates(commands.Cog):
         return discord.Embed(
             title="🛏️🚗 NYFurs Con Roommate & Carpool Finder",
             description=(
+                "🧪 **Beta:** This finder is brand new and still being polished — things may be a little wobbly. "
+                "If anything acts up, please let staff know! 🐾\n\n"
                 "Heading to a con? I can privately pair you with another NYFurs fluff to **share a hotel room** or "
                 "**carpool**, safely and anonymously. 🐾\n\n"
                 "**How it works**\n"
