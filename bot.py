@@ -52,6 +52,7 @@ INITIAL_COGS = (
     "cogs.hipileon",
     "cogs.slurwatch",
     "cogs.argument",
+    "cogs.roommates",
 )
 
 
@@ -113,15 +114,16 @@ class FurBot(commands.Bot):
         # Register persistent button handlers so they keep working after a
         # restart. DynamicItems are registered by class; the batch view by
         # instance (its custom_ids are fixed).
-        from cogs.events import RegisterButton
         from cogs.onboarding import BatchConfirmView, ModActionButton, PhoneReviewButton, WaitingButton
         from cogs.review import ReviewButton, ReviewConsentButton, ReviewOptOutButton
+        from cogs.roommates import HubView, OfferButton
         self.add_dynamic_items(
             WaitingButton, PhoneReviewButton, ModActionButton,
             ReviewButton, ReviewConsentButton, ReviewOptOutButton,
-            RegisterButton,
+            OfferButton,
         )
         self.add_view(BatchConfirmView(self))
+        self.add_view(HubView())
 
         # Register slash commands. If a guild ID is configured we sync to
         # that guild for instant availability; otherwise we sync globally

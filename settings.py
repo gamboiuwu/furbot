@@ -85,8 +85,6 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "events_interest_dm_enabled":(bool,  True,  "DM users a registration link when they mark Interested (or withdraw) on an event."),
     "events_reminder_enabled":   (bool,  True,  "DM interested users a reminder before an event starts."),
     "events_reminder_hours":     (int,   24,    "How many hours before an event to remind interested users."),
-    "events_dm_register_enabled":(bool,  True,  "Offer a 'Register' button in the Interested DM to collect/remember details."),
-    "events_register_submit_enabled": (bool, False, "Actually submit registrations to Indico (needs a verified registration endpoint)."),
     "hi_enabled":                (bool,  True,  "Occasionally post 'hi' in the welcome channel for fun."),
     "hi_per_week":               (int,   5,     "Roughly how many times a week the bot says hi."),
     "hi_channel_id":             (int,   0,     "Channel for the random hi (0 = use the welcome channel)."),
@@ -104,6 +102,17 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "risk_dm_threshold":         (float, 0.6,   "Risk score (0-1) at which to warn a mod about a new join. Higher = fewer alerts."),
     "risk_raid_window_minutes":  (int,   10,    "Window for detecting a burst of rapid joins (raid)."),
     "risk_raid_min_joins":       (int,   6,     "Joins within the window that count as a raid burst."),
+    "roommate_enabled":          (bool,  False, "Master switch for the 18+ con roommate finder."),
+    "roommate_hub_channel_id":   (int,   1512529974266040443, "Channel where the roommate-finder hub message is posted (/roommate setup)."),
+    "roommate_adult_role_id":    (int,   0,     "Fallback 18+ role if no age-range roles are configured (0 = use the verified-members role)."),
+    "roommate_age_roles":        (str,
+        "18-19:968639927942271066,20-29:968639955880534037,30-39:968639982052995102,"
+        "40-49:1484909865590718625,50-59:1484909891939336375,60+:1484909914701697095",
+        "Age-range roles as 'label:role_id' pairs (comma-separated). Holding any one proves 18+; used for age matching."),
+    "roommate_cons":             (str,   "",    "Comma-separated list of conventions members can pick from."),
+    "roommate_match_interval_hours": (int, 6,   "Safety-net sweep interval (hours) — matching is mostly immediate on registration."),
+    "roommate_cons_channel_id":  (int,   1173049058856816772, "Forum/channel scanned by /roommate importcons to auto-add con names."),
+    "roommate_con_dates":        (str,   "", "Optional con date windows for validation, e.g. 'Anthrocon: 2026-07-02..2026-07-05; FurDU: 2026-04-24..2026-04-27'."),
 }
 
 

@@ -142,8 +142,6 @@ class Config:
     events_interest_dm_enabled: bool | None
     events_reminder_enabled: bool | None
     events_reminder_hours: int | None
-    events_dm_register_enabled: bool | None
-    events_register_submit_enabled: bool | None
     hi_pileon_enabled: bool | None
     hi_pileon_count: int | None
     slur_watch_enabled: bool | None
@@ -265,8 +263,6 @@ class Config:
             events_interest_dm_enabled=_get_bool("EVENTS_INTEREST_DM_ENABLED"),
             events_reminder_enabled=_get_bool("EVENTS_REMINDER_ENABLED"),
             events_reminder_hours=_get_int("EVENTS_REMINDER_HOURS"),
-            events_dm_register_enabled=_get_bool("EVENTS_DM_REGISTER_ENABLED"),
-            events_register_submit_enabled=_get_bool("EVENTS_REGISTER_SUBMIT_ENABLED"),
             hi_pileon_enabled=_get_bool("HI_PILEON_ENABLED"),
             hi_pileon_count=_get_int("HI_PILEON_COUNT"),
             slur_watch_enabled=_get_bool("SLUR_WATCH_ENABLED"),
