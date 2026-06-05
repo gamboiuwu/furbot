@@ -122,7 +122,7 @@ def _kind_label(kind: str) -> str:
 
 def _cap_str(listing: dict) -> str:
     c = listing.get("cap")
-    return f"{c} fluffs total" if isinstance(c, int) else str(c)
+    return f"{c} spots" if isinstance(c, int) else "open spot"
 
 
 # ============================ persistent UI ===================================
@@ -313,58 +313,63 @@ class RegistrationView(discord.ui.View):
 
 class RegistrationModal(discord.ui.Modal):
     """Uses the discord.ui.Label wrapper (the non-deprecated 2.7+ way to label
-    modal inputs). Fields adapt to hotel vs carpool."""
+    modal inputs). Fields adapt to hotel vs carpool, and host vs seeker."""
 
     def __init__(self, cog: "Roommates", user_id: int, sel: dict, kind: str, role: str,
                  existing: dict | None = None) -> None:
-        super().__init__(title="Headcount, dates & details")
+        is_host = role == "host"
+        carpool = kind == "carpool"
+        super().__init__(title="Room details" if is_host else "Your dates & preferences")
         self.cog = cog
         self.user_id = user_id
         self.sel = sel
         self.kind = kind
         self.role = role
-        carpool = kind == "carpool"
         e = existing or {}
 
-        self.cap = discord.ui.TextInput(
-            required=True, max_length=2, placeholder="e.g. 4",
-            default=str(e["cap"]) if isinstance(e.get("cap"), int) else None,
-        )
+        # Headcount is only relevant for hosts — seekers take whatever's available.
+        self.cap: discord.ui.TextInput | None = None
+        if is_host:
+            self.cap = discord.ui.TextInput(
+                required=True, max_length=2, placeholder="e.g. 4",
+                default=str(e["cap"]) if isinstance(e.get("cap"), int) else None,
+            )
+            self.add_item(discord.ui.Label(
+                text=f"How many spots? ({MIN_CAP}-{MAX_CAP} total)",
+                description=("Seats in the car, including you." if carpool else "People sharing the room, including you."),
+                component=self.cap,
+            ))
+
         self.dates = discord.ui.TextInput(
             required=True, max_length=100, placeholder="e.g. Jul 2-5, 2026",
             default=e.get("dates") or e.get("days") or None,
         )
         self.details = discord.ui.TextInput(
             style=discord.TextStyle.paragraph, required=False, max_length=400, default=e.get("details") or None,
-            placeholder=("e.g. picking up 9am near Jersey City PATH, room for 2 fursuits, non-smoking"
-                         if carpool else "e.g. 2 queen beds, chill, non-smoking"),
+            placeholder=("e.g. picking up near Jersey City PATH, chill vibe, non-smoking"
+                         if carpool else "e.g. chill, non-smoking, night-owl or early riser?"),
         )
         self.budget = discord.ui.TextInput(
             required=False, max_length=80, default=e.get("budget") or None,
-            placeholder=("e.g. split gas + tolls evenly" if carpool else "e.g. room split evenly"),
+            placeholder=("e.g. split gas + tolls evenly" if carpool else "e.g. split evenly"),
         )
-        need21 = carpool and role == "host"
+        need21 = carpool and is_host
         self.confirm = discord.ui.TextInput(
             required=True, max_length=20, placeholder="21" if need21 else "18",
         )
         self.add_item(discord.ui.Label(
-            text=f"How many fluffs total? ({MIN_CAP}-{MAX_CAP})",
-            description=("Seats in the car, including you." if carpool else "People sharing the room, including you."),
-            component=self.cap,
-        ))
-        self.add_item(discord.ui.Label(
-            text="Specific travel dates",
-            description="Real dates, not weekday names (e.g. Jul 2-5, 2026), so availability lines up.",
+            text="Your travel dates",
+            description="Specific dates, not weekday names (e.g. Jul 2-5, 2026).",
             component=self.dates,
         ))
         self.add_item(discord.ui.Label(
-            text="Pickup time(s) & general area, plus vibe" if carpool else "Bed setup & vibe",
-            description=("When/where you'd pick up (general area only, NO home address) and the vibe."
-                         if carpool else "Beds, smoking, sleep schedule, etc. No personal info."),
+            text="Pickup time(s) & general area" if carpool else "Vibe & preferences",
+            description=("When/where you'd pick up (general area only, NO home address)."
+                         if carpool else "Sleep schedule, smoking, fursuit-friendly, etc. No personal info."),
             component=self.details,
         ))
         self.add_item(discord.ui.Label(
-            text="Gas / cost share (optional)" if carpool else "Budget / cost share (optional)",
+            text="Gas / cost share (optional)" if carpool else "Budget thoughts (optional)",
             component=self.budget,
         ))
         self.add_item(discord.ui.Label(
@@ -373,9 +378,10 @@ class RegistrationModal(discord.ui.Modal):
         ))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        cap_raw = self.cap.value.strip() if self.cap is not None else ""
         await self.cog.finalize_listing(
             interaction, self.user_id, self.sel, self.kind, self.role,
-            self.cap.value.strip(), self.dates.value.strip(), self.details.value.strip(),
+            cap_raw, self.dates.value.strip(), self.details.value.strip(),
             self.budget.value.strip(), self.confirm.value.strip(),
         )
 
@@ -596,8 +602,9 @@ class Roommates(commands.Cog):
             f"🏷️ {'🚗 Carpool' if carpool else '🏨 Hotel room'} · **{role}**",
             f"🎪 Con: **{lst['con']}**",
             f"🎂 Their age range: {band}",
-            f"👥 {'Seats' if carpool else 'Headcount'}: {_cap_str(lst)}",
         ]
+        if lst.get("cap") is not None:
+            bits.append(f"👥 {'Seats' if carpool else 'Spots'}: {_cap_str(lst)}")
         if lst.get("dates") or lst.get("days"):
             bits.append(f"📅 Dates: {lst.get('dates') or lst.get('days')}")
         if lst.get("budget"):
@@ -643,14 +650,18 @@ class Roommates(commands.Cog):
             await interaction.response.send_message(err, ephemeral=True)
             return
         con = sel["con"]
-        # Validate headcount.
-        if not cap_raw.isdigit() or not (MIN_CAP <= int(cap_raw) <= MAX_CAP):
-            await interaction.response.send_message(
-                f"Pop in a whole number of fluffs between **{MIN_CAP} and {MAX_CAP}** for the headcount, "
-                "then try again. 🐾", ephemeral=True,
-            )
-            return
-        cap = int(cap_raw)
+        # Headcount is only required from hosts; seekers take whatever's available.
+        is_host = role == "host"
+        if is_host:
+            if not cap_raw.isdigit() or not (MIN_CAP <= int(cap_raw) <= MAX_CAP):
+                await interaction.response.send_message(
+                    f"Pop in a whole number of spots between **{MIN_CAP} and {MAX_CAP}**, then try again. 🐾",
+                    ephemeral=True,
+                )
+                return
+            cap: int | None = int(cap_raw)
+        else:
+            cap = None
         # Validate dates: require specific calendar dates (not just weekday names),
         # and, if staff configured a window for this con, that they fall inside it.
         date_err = self._validate_dates(dates, con)
