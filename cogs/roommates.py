@@ -149,6 +149,20 @@ def _pickup_area(text: str) -> int | None:
     return None
 
 
+# Generic words stripped when comparing hotel names, so brand/location tokens
+# (e.g. "Marriott", "Marquis", "Hilton") drive the match instead of filler.
+_HOTEL_FILLER = {
+    "hotel", "the", "inn", "suites", "suite", "resort", "spa", "and", "by", "at",
+    "a", "an", "tbd", "flexible", "any", "undecided", "unsure", "unknown", "na", "none",
+}
+
+
+def _hotel_tokens(text: str) -> set[str]:
+    """Meaningful tokens of a hotel name (brand/location), with filler removed."""
+    cleaned = re.sub(r"[^a-z0-9 ]", " ", (text or "").lower())
+    return {w for w in cleaned.split() if len(w) > 2 and w not in _HOTEL_FILLER}
+
+
 def _short() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -374,13 +388,19 @@ class RegistrationModal(discord.ui.Modal):
                  existing: dict | None = None) -> None:
         is_host = role == "host"
         carpool = kind == "carpool"
+        hotel_kind = kind == "hotel"
         super().__init__(title="Room details" if is_host else "Your dates & preferences")
         self.cog = cog
         self.user_id = user_id
         self.sel = sel
         self.kind = kind
         self.role = role
-        e = existing or {}
+        self.existing = existing or {}
+        e = self.existing
+
+        # Discord caps modals at 5 fields. For a hotel host that's:
+        #   cap, hotel, dates, details, confirm  (budget folded into the vibe note).
+        # Hotel seekers have room for budget; carpools have no hotel field.
 
         # Headcount is only relevant for hosts — seekers take whatever's available.
         self.cap: discord.ui.TextInput | None = None
@@ -395,38 +415,68 @@ class RegistrationModal(discord.ui.Modal):
                 component=self.cap,
             ))
 
+        # Which hotel — only for hotel listings. Required of hosts (they provide
+        # the room), optional for seekers (they may be flexible).
+        self.hotel: discord.ui.TextInput | None = None
+        if hotel_kind:
+            self.hotel = discord.ui.TextInput(
+                required=is_host, max_length=100, default=e.get("hotel") or None,
+                placeholder=("e.g. Marriott Marquis (or 'TBD')" if is_host
+                             else "e.g. the host hotel, or 'flexible'"),
+            )
+            self.add_item(discord.ui.Label(
+                text="Which hotel?" if is_host else "Preferred hotel (optional)",
+                description=("The hotel you've booked or plan to book (or 'TBD'). Name only, no room numbers."
+                             if is_host else "A hotel you'd like to be at, or 'flexible' if you're open."),
+                component=self.hotel,
+            ))
+
         self.dates = discord.ui.TextInput(
             required=True, max_length=100, placeholder="e.g. Jul 2-5, 2026",
             default=e.get("dates") or e.get("days") or None,
-        )
-        self.details = discord.ui.TextInput(
-            style=discord.TextStyle.paragraph, required=False, max_length=400, default=e.get("details") or None,
-            placeholder=("e.g. picking up near Jersey City PATH, chill vibe, non-smoking"
-                         if carpool else "e.g. chill, non-smoking, night-owl or early riser?"),
-        )
-        self.budget = discord.ui.TextInput(
-            required=False, max_length=80, default=e.get("budget") or None,
-            placeholder=("e.g. split gas + tolls evenly" if carpool else "e.g. split evenly"),
-        )
-        need21 = carpool and is_host
-        self.confirm = discord.ui.TextInput(
-            required=True, max_length=20, placeholder="21" if need21 else "18",
         )
         self.add_item(discord.ui.Label(
             text="Your travel dates",
             description="Specific dates, not weekday names (e.g. Jul 2-5, 2026).",
             component=self.dates,
         ))
+
+        # Hotel hosts give up the standalone budget field; nudge them to put any
+        # cost-split thoughts in the vibe note instead.
+        host_no_budget = hotel_kind and is_host
+        if carpool:
+            details_desc = "When/where you'd pick up (general area only, NO home address)."
+        elif host_no_budget:
+            details_desc = "Sleep schedule, smoking, fursuit-friendly, cost-split ideas, etc. No personal info."
+        else:
+            details_desc = "Sleep schedule, smoking, fursuit-friendly, etc. No personal info."
+        self.details = discord.ui.TextInput(
+            style=discord.TextStyle.paragraph, required=False, max_length=400, default=e.get("details") or None,
+            placeholder=("e.g. picking up near Jersey City PATH, chill vibe, non-smoking" if carpool
+                         else "e.g. chill, non-smoking, night-owl or early riser?"),
+        )
         self.add_item(discord.ui.Label(
             text="Pickup time(s) & general area" if carpool else "Vibe & preferences",
-            description=("When/where you'd pick up (general area only, NO home address)."
-                         if carpool else "Sleep schedule, smoking, fursuit-friendly, etc. No personal info."),
+            description=details_desc,
             component=self.details,
         ))
-        self.add_item(discord.ui.Label(
-            text="Gas / cost share (optional)" if carpool else "Budget thoughts (optional)",
-            component=self.budget,
-        ))
+
+        # Budget field for everyone except hotel hosts (no room in the 5-field modal).
+        self.budget: discord.ui.TextInput | None = None
+        if not host_no_budget:
+            self.budget = discord.ui.TextInput(
+                required=False, max_length=80, default=e.get("budget") or None,
+                placeholder=("e.g. split gas + tolls evenly" if carpool else "e.g. split evenly"),
+            )
+            self.add_item(discord.ui.Label(
+                text="Gas / cost share (optional)" if carpool else "Budget thoughts (optional)",
+                component=self.budget,
+            ))
+
+        need21 = carpool and is_host
+        self.confirm = discord.ui.TextInput(
+            required=True, max_length=20, placeholder="21" if need21 else "18",
+        )
         self.add_item(discord.ui.Label(
             text="Type 21, you must be 21+ to drive" if need21 else "Type 18 to confirm you're 18+",
             component=self.confirm,
@@ -434,10 +484,13 @@ class RegistrationModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         cap_raw = self.cap.value.strip() if self.cap is not None else ""
+        hotel = self.hotel.value.strip() if self.hotel is not None else ""
+        # Hotel hosts have no budget field — keep any value they set previously.
+        budget = self.budget.value.strip() if self.budget is not None else self.existing.get("budget", "")
         await self.cog.finalize_listing(
             interaction, self.user_id, self.sel, self.kind, self.role,
-            cap_raw, self.dates.value.strip(), self.details.value.strip(),
-            self.budget.value.strip(), self.confirm.value.strip(),
+            cap_raw, hotel, self.dates.value.strip(), self.details.value.strip(),
+            budget, self.confirm.value.strip(),
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
@@ -474,9 +527,11 @@ class _InterestSelect(discord.ui.Select):
             code = lst["id"][:4].upper()
             tag = f"{'🚗' if lst['kind'] == 'carpool' else '🏨'} {lst['role']}"
             band = "/".join(lst.get("own_bands") or []) or "18+"
+            # Surface the hotel for hotel listings, else a snippet of their details.
+            hint = lst["hotel"] if (lst["kind"] == "hotel" and lst.get("hotel")) else lst.get("details", "")
             options.append(discord.SelectOption(
                 label=f"{code} · {tag} · {_cap_str(lst)}"[:100],
-                description=f"Age {band} · {lst.get('details','')[:50]}"[:100],
+                description=f"Age {band} · {hint[:50]}"[:100],
                 value=lst["id"],
             ))
         super().__init__(placeholder="Express interest in a listing...", min_values=1, max_values=1, row=1, options=options)
@@ -660,6 +715,8 @@ class Roommates(commands.Cog):
         ]
         if lst.get("cap") is not None:
             bits.append(f"👥 {'Seats' if carpool else 'Spots'}: {_cap_str(lst)}")
+        if not carpool and lst.get("hotel"):
+            bits.append(f"🏩 Hotel: {lst['hotel']}")
         if lst.get("dates") or lst.get("days"):
             bits.append(f"📅 Dates: {lst.get('dates') or lst.get('days')}")
         if lst.get("budget"):
@@ -699,7 +756,7 @@ class Roommates(commands.Cog):
         return None
 
     async def finalize_listing(self, interaction, user_id, sel, kind, role,
-                               cap_raw, dates, details, budget, confirm) -> None:
+                               cap_raw, hotel, dates, details, budget, confirm) -> None:
         member, err = await self._gate(interaction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
@@ -738,7 +795,7 @@ class Roommates(commands.Cog):
             )
             return
         # Privacy guard: no addresses / phone numbers (interest gathering only).
-        if any(_PII_RE.search(t or "") for t in (dates, details, budget)):
+        if any(_PII_RE.search(t or "") for t in (dates, details, budget, hotel)):
             await interaction.response.send_message(
                 "🔒 Keep **addresses and personal info out** of your listing please, these posts are just for "
                 "rounding up interest. Swap exact pickup spots and contact details in a private DM or group chat "
@@ -757,7 +814,7 @@ class Roommates(commands.Cog):
             "id": lid, "user_id": user_id, "con": con, "kind": kind, "role": role,
             "cap": cap, "age_prefs": sel.get("age") or "any",
             "own_bands": self._member_bands(member),
-            "dates": dates, "budget": budget, "details": details,
+            "hotel": hotel, "dates": dates, "budget": budget, "details": details,
             "status": "open",
             "created_at": existing["created_at"] if existing else int(time.time()),
             "updated_at": int(time.time()),
@@ -1087,6 +1144,15 @@ class Roommates(commands.Cog):
             aa, ba = _pickup_area(ad), _pickup_area(bd)
             if aa is not None and ba is not None:
                 if aa == ba:
+                    s += 3
+                else:
+                    s -= 1
+
+        # Hotel: rooming at the same hotel is the ideal pairing.
+        if a.get("kind") == "hotel":
+            ha, hb = _hotel_tokens(a.get("hotel") or ""), _hotel_tokens(b.get("hotel") or "")
+            if ha and hb:
+                if ha & hb:
                     s += 3
                 else:
                     s -= 1
@@ -1647,8 +1713,8 @@ class Roommates(commands.Cog):
                 "Heading to a con? I can privately pair you with another NYFurs fluff to **share a hotel room** or "
                 "**carpool**, safely and anonymously. 🐾\n\n"
                 "**How it works**\n"
-                "1. **Register** your room or ride: hotel or carpool, hosting or joining, con, headcount, age "
-                "range, dates and details.\n"
+                "1. **Register** your room or ride: hotel or carpool, hosting or joining, con, which hotel, "
+                "headcount, age range, dates and details.\n"
                 "2. I sniff around for a compatible buddy and **reach out the moment I find one**, sharing their "
                 "*answers, never their name*.\n"
                 "3. You each tap **Yes / Pass**. Hosts have the final say and can decline freely.\n"
