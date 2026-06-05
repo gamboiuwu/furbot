@@ -289,7 +289,7 @@ class Suggestions(commands.Cog):
 
     # ---- push to staff to-do --------------------------------------------
 
-    async def _push_todo(self, thread: discord.Thread, yes: int, no: int) -> None:
+    async def _push_todo(self, thread: discord.Thread, yes: int, no: int, note: str = "") -> None:
         todo_ch = self.bot.get_channel(int(self._s("suggestions_todo_channel_id") or 0))
         if todo_ch is None:
             log.error("To-do channel not found; cannot push suggestion %s", thread.id)
@@ -317,7 +317,7 @@ class Suggestions(commands.Cog):
             timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Original author", value=author, inline=False)
-        embed.add_field(name="Vote", value=f"✅ {yes}  •  ❌ {no}", inline=True)
+        embed.add_field(name="Decision", value=note or f"✅ {yes}  •  ❌ {no}", inline=True)
         embed.add_field(name="Source", value=f"[Jump to suggestion]({thread.jump_url})", inline=True)
         embed.add_field(
             name="Deadline",
@@ -456,6 +456,65 @@ class Suggestions(commands.Cog):
         await self._tick_polls()
         await self._tick_todos()
         await interaction.followup.send("✅ Ran the suggestion check.", ephemeral=True)
+
+    @group.command(name="decide", description="(Staff) Force-approve or deny this suggestion, overriding the poll.")
+    @app_commands.describe(decision="Approve (push to to-do) or Deny this suggestion")
+    @app_commands.choices(decision=[
+        app_commands.Choice(name="Approve", value="approve"),
+        app_commands.Choice(name="Deny", value="deny"),
+    ])
+    @is_staff()
+    async def decide_cmd(self, interaction: discord.Interaction, decision: app_commands.Choice[str]) -> None:
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread) or thread.parent_id != int(self._s("suggestions_channel_id") or 0):
+            await interaction.response.send_message(
+                "Run this **inside the suggestion thread** you want to decide.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        key = str(thread.id)
+        polls = self.store.get(POLLS, {})
+        rec = polls.get(key)
+
+        # Already finalized? Locked — cannot be modified.
+        if rec and rec.get("decided"):
+            outcome = rec.get("decision") or ("approved" if rec.get("forced") else "concluded")
+            await interaction.followup.send(
+                f"🔒 This suggestion is already **{outcome}** and can't be changed.", ephemeral=True
+            )
+            return
+
+        approved = decision.value == "approve"
+        staffer = interaction.user
+
+        # Persist the decision (lock it).
+        def _mut(store: dict) -> None:
+            r = store.setdefault(POLLS, {}).setdefault(key, {"announced": True, "poll_id": 0, "poll_at": 0})
+            r["decided"] = True
+            r["forced"] = True
+            r["forced_by"] = staffer.id
+            r["decision"] = "approved" if approved else "denied"
+        await self.store.update(_mut)
+
+        if approved:
+            await self._push_todo(thread, 0, 0, note=f"✅ Approved by {staffer.display_name} (staff override)")
+            try:
+                await thread.send(
+                    f"✅ **Approved by staff** ({staffer.mention}), overriding the poll. "
+                    "It's been added to the staff to-do list."
+                )
+            except discord.HTTPException:
+                pass
+            await interaction.followup.send("✅ Approved and pushed to the to-do list.", ephemeral=True)
+        else:
+            try:
+                await thread.send(
+                    f"❌ **Denied by staff** ({staffer.mention}). Thanks for the suggestion — "
+                    "it won't be moving forward this time."
+                )
+            except discord.HTTPException:
+                pass
+            await interaction.followup.send("❌ Marked as denied.", ephemeral=True)
 
     async def cog_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
