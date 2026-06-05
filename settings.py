@@ -126,6 +126,15 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "suggestions_deadline_days": (int,   14,    "Days after a to-do is created before the 'Live' tag is expected."),
     "suggestions_ping_days":     (int,   3,     "How often (days) to ping staff about an overdue to-do until it's Live."),
     "suggestions_live_tag":      (str,   "Live", "Forum tag name on the to-do channel that marks a task integrated/done."),
+    "event_intake_enabled":      (bool,  False, "Master switch for the Event Application intake (Google Form -> #event-post)."),
+    "event_post_channel_id":     (int,   1356772182956445786, "Forum channel where event applications are posted for review."),
+    "event_team_role_id":        (int,   1217534869664567306, "Events Team role pinged for new/overdue applications."),
+    "event_tag_pending":         (str,   "Changes Required", "Forum tag applied to a new application awaiting a decision."),
+    "event_tag_accepted":        (str,   "Accepted", "Forum tag applied when an application is accepted."),
+    "event_tag_declined":        (str,   "Declined", "Forum tag applied when an application is declined."),
+    "event_escalate_hours":      (int,   72,    "Hours with no decision before the Events Team starts getting daily pings."),
+    "event_escalate_repeat_hours": (int, 24,    "How often (hours) to re-ping the Events Team about an undecided application."),
+    "event_intake_path":         (str,   "/event-intake", "URL path the Google Form's Apps Script POSTs submissions to."),
 }
 
 
@@ -148,6 +157,7 @@ SETTING_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
     ("🛏️", "Roommate finder",   ("roommate_",)),
     ("🚨", "Safety reports",    ("reports_",)),
     ("🗳️", "Suggestion box",    ("suggestions_",)),
+    ("🎫", "Event applications", ("event_",)),
 ]
 
 
