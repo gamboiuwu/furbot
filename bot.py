@@ -55,6 +55,7 @@ INITIAL_COGS = (
     "cogs.roommates",
     "cogs.reports",
     "cogs.suggestions",
+    "cogs.events_intake",
 )
 
 
@@ -120,10 +121,11 @@ class FurBot(commands.Bot):
         from cogs.review import ReviewButton, ReviewConsentButton, ReviewOptOutButton
         from cogs.roommates import HubView, OfferButton
         from cogs.reports import ReportHubView
+        from cogs.events_intake import EventDecisionButton
         self.add_dynamic_items(
             WaitingButton, PhoneReviewButton, ModActionButton,
             ReviewButton, ReviewConsentButton, ReviewOptOutButton,
-            OfferButton,
+            OfferButton, EventDecisionButton,
         )
         self.add_view(BatchConfirmView(self))
         self.add_view(HubView())

@@ -137,6 +137,8 @@ class Config:
     welcome_shoutout_every: int | None
     # Indico (events.nyfurs.org) — token is a secret, env-only (never stored).
     indico_api_token: str | None
+    # Shared secret for the Event Application web intake (HMAC) — env-only secret.
+    event_form_secret: str | None
     events_sync_enabled: bool | None
     events_sync_interval_hours: int | None
     events_interest_dm_enabled: bool | None
@@ -258,6 +260,7 @@ class Config:
             welcome_window_minutes=_get_int("WELCOME_WINDOW_MINUTES"),
             welcome_shoutout_every=_get_int("WELCOME_SHOUTOUT_EVERY"),
             indico_api_token=os.getenv("INDICO_API_TOKEN", "").strip() or None,
+            event_form_secret=os.getenv("EVENT_FORM_SECRET", "").strip() or None,
             events_sync_enabled=_get_bool("EVENTS_SYNC_ENABLED"),
             events_sync_interval_hours=_get_int("EVENTS_SYNC_INTERVAL_HOURS"),
             events_interest_dm_enabled=_get_bool("EVENTS_INTEREST_DM_ENABLED"),
