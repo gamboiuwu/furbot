@@ -112,6 +112,42 @@ def _extract_dates(text: str, default_year: int) -> list[datetime.date]:
     return out
 
 
+def _date_range(text: str) -> tuple[datetime.date, datetime.date] | None:
+    """Return (earliest, latest) date extracted from free text, trying this year then next."""
+    today = datetime.date.today()
+    for year in (today.year, today.year + 1):
+        dates = _extract_dates(text or "", year)
+        if dates:
+            return min(dates), max(dates)
+    return None
+
+
+# NYC/Northeast pickup areas used for carpool proximity scoring.
+_PICKUP_AREAS: list[frozenset[str]] = [
+    frozenset({"brooklyn", "bk"}),
+    frozenset({"queens"}),
+    frozenset({"manhattan", "nyc", "midtown", "downtown"}),
+    frozenset({"bronx"}),
+    frozenset({"staten island", "si"}),
+    frozenset({"jersey city", "jc", "hoboken"}),
+    frozenset({"newark"}),
+    frozenset({"long island", "li", "nassau", "suffolk"}),
+    frozenset({"westchester"}),
+    frozenset({"connecticut", "ct", "fairfield"}),
+    frozenset({"new jersey", "nj"}),
+    frozenset({"upstate", "albany", "buffalo", "rochester", "syracuse"}),
+]
+
+
+def _pickup_area(text: str) -> int | None:
+    """Return the index of the first recognized pickup area in `text`, or None."""
+    t = text.lower()
+    for i, terms in enumerate(_PICKUP_AREAS):
+        if any(term in t for term in terms):
+            return i
+    return None
+
+
 def _short() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -937,10 +973,79 @@ class Roommates(commands.Cog):
 
     def _score(self, a: dict, b: dict, a_bands: list[str], b_bands: list[str]) -> int:
         s = 0
+
+        # Age band overlap — strong compatibility signal.
         if set(a_bands) & set(b_bands):
             s += 3
-        if a.get("cap") == b.get("cap"):
+
+        # Date overlap — most important practical factor.
+        ar = _date_range(a.get("dates") or "")
+        br = _date_range(b.get("dates") or "")
+        if ar and br:
+            a0, a1 = ar
+            b0, b1 = br
+            if a0 <= b1 and b0 <= a1:
+                overlap = (min(a1, b1) - max(a0, b0)).days + 1
+                s += min(overlap, 4)        # up to +4 for long overlap
+            else:
+                s -= 8                      # non-overlapping dates: hard to room together
+        elif ar or br:
+            s -= 1                          # one side has dates, other doesn't
+
+        # Vibe keyword compatibility.
+        ad = (a.get("details") or "").lower()
+        bd = (b.get("details") or "").lower()
+
+        # Smoking: non-smoker with a smoker is a bad match.
+        a_ns = bool(re.search(r"non.?smok|no smok", ad))
+        b_ns = bool(re.search(r"non.?smok|no smok", bd))
+        a_smok = "smok" in ad and not a_ns
+        b_smok = "smok" in bd and not b_ns
+        if (a_ns and b_smok) or (b_ns and a_smok):
+            s -= 4
+        elif a_ns and b_ns:
             s += 1
+
+        # Sleep schedule.
+        a_early = bool(re.search(r"early.?(bird|riser|morning|wake)|morning person", ad))
+        b_early = bool(re.search(r"early.?(bird|riser|morning|wake)|morning person", bd))
+        a_late = bool(re.search(r"night.?owl|late night|late sleeper|stay up|night person", ad))
+        b_late = bool(re.search(r"night.?owl|late night|late sleeper|stay up|night person", bd))
+        if (a_early and b_early) or (a_late and b_late):
+            s += 2
+        elif (a_early and b_late) or (a_late and b_early):
+            s -= 2
+
+        # Fursuit-friendly — both hauling suits means shared priorities.
+        a_suit = bool(re.search(r"fursuit|suit|head\b|suit.?bag|fursuiting", ad))
+        b_suit = bool(re.search(r"fursuit|suit|head\b|suit.?bag|fursuiting", bd))
+        if a_suit and b_suit:
+            s += 1
+
+        # Budget tier: cheap vs luxury is a mismatch.
+        def _tier(t: str) -> int:
+            t = t.lower()
+            if re.search(r"budget|cheap|affordable|low.?cost|split even", t):
+                return 0
+            if re.search(r"luxury|premium|nice hotel|fancy|upscale|splurge", t):
+                return 2
+            return 1
+        at = _tier(a.get("budget") or "")
+        bt = _tier(b.get("budget") or "")
+        if at == bt:
+            s += 1
+        elif abs(at - bt) > 1:
+            s -= 2
+
+        # Carpool: pickup area proximity (same borough/region = strong fit).
+        if a.get("kind") == "carpool":
+            aa, ba = _pickup_area(ad), _pickup_area(bd)
+            if aa is not None and ba is not None:
+                if aa == ba:
+                    s += 3
+                else:
+                    s -= 1
+
         return s
 
     async def _candidates_for(self, listing: dict) -> list[tuple[int, dict]]:
