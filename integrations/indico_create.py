@@ -155,8 +155,15 @@ class IndicoEventCreator:
         end: str,
         timezone: str = "America/New_York",
         unlisted: bool = True,
+        event_type: str = "conference",
+        description_html: str | None = None,
+        location: dict | None = None,
+        contacts: dict | None = None,
     ) -> IndicoDraft:
         # category_id 0 is the root category on this instance — a valid target.
+        # conference/meeting share the same creation form (only lectures differ).
+        if event_type not in ("conference", "meeting", "lecture"):
+            event_type = "conference"
         start_date, start_time = _split_dt(start)
         # If the end is blank/unparseable, default to two hours after the start.
         try:
@@ -174,7 +181,7 @@ class IndicoEventCreator:
         jar = aiohttp.CookieJar(unsafe=True)
         async with aiohttp.ClientSession(timeout=timeout, headers=headers, cookie_jar=jar) as s:
             await self._login(s)
-            return await self._post_create(
+            draft = await self._post_create(
                 s,
                 category_id=category_id,
                 title=title,
@@ -182,7 +189,55 @@ class IndicoEventCreator:
                 end=(end_date, end_time),
                 timezone=timezone,
                 unlisted=unlisted,
+                event_type=event_type,
             )
+            # The create form only takes title/date/timezone; everything else is
+            # filled in afterwards via the management endpoints. Best-effort — the
+            # event already exists, so a failure here is non-fatal.
+            if draft.event_id:
+                await self._apply_details(s, draft.event_id, title=title,
+                                          description_html=description_html,
+                                          location=location, contacts=contacts)
+            return draft
+
+    async def _apply_details(self, s, event_id, *, title, description_html, location, contacts):
+        """Fill in description / location / contact after creation via the
+        event-management endpoints (unprefixed forms using csrf_token)."""
+        import json as _json
+        base_mgmt = f"{self.base}/event/{event_id}/manage/settings"
+        csrf = await self._session_csrf(s)
+        headers = {
+            "X-CSRF-Token": csrf,
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+        }
+
+        async def _post(name: str, fields: list[tuple[str, str]]) -> None:
+            data = [("csrf_token", csrf)] + fields
+            try:
+                async with s.post(f"{base_mgmt}/{name}", data=data, headers=headers,
+                                  allow_redirects=False) as r:
+                    if r.status >= 400:
+                        log.info("manage/%s for event %s -> HTTP %s", name, event_id, r.status)
+            except aiohttp.ClientError:
+                log.info("manage/%s for event %s failed (network)", name, event_id)
+
+        if description_html:
+            await _post("data", [("title", title[:1000] or "Event"),
+                                 ("description", description_html),
+                                 ("url_shortcut", "")])
+        if location and (location.get("venue_name") or location.get("address")):
+            loc = {"inheriting": False, "venue_name": location.get("venue_name", ""),
+                   "room_name": "", "address": location.get("address", ""),
+                   "venue_id": None, "room_id": None}
+            await _post("location", [("location_data", _json.dumps(loc))])
+        if contacts and (contacts.get("emails") or contacts.get("phones")):
+            fields = [("contact_title", contacts.get("title") or "Contact")]
+            for e in contacts.get("emails", []):
+                fields.append(("contact_emails", e))
+            for p in contacts.get("phones", []):
+                fields.append(("contact_phones", p))
+            await _post("contact-info", fields)
 
     async def _login(self, s: aiohttp.ClientSession) -> None:
         # The local-login form lives on /login/ itself (not /login/<provider>/,
@@ -239,10 +294,11 @@ class IndicoEventCreator:
         end: tuple[str, str],
         timezone: str,
         unlisted: bool,
+        event_type: str = "conference",
     ) -> IndicoDraft:
         # The category is read from the `category_id` query arg (RHCreateEvent),
         # and every form field carries WTForms' `event-creation-` prefix.
-        create_url = f"{self.base}/event/create/meeting?category_id={category_id}"
+        create_url = f"{self.base}/event/create/{event_type}?category_id={category_id}"
         csrf = await self._session_csrf(s)
         P = "event-creation-"
 
@@ -316,7 +372,7 @@ class IndicoEventCreator:
         async with self._debug_session() as s:
             await self._login(s)
             csrf = await self._session_csrf(s)
-            url = f"{self.base}/event/create/meeting?category_id={category_id}"
+            url = f"{self.base}/event/create/conference?category_id={category_id}"
             async with s.get(url, headers={"X-Requested-With": "XMLHttpRequest"}) as r:
                 body = await r.text()
         html = body.replace('\\"', '"').replace("\\/", "/").replace("\\n", "\n")
@@ -329,7 +385,7 @@ class IndicoEventCreator:
         async with self._debug_session() as s:
             await self._login(s)
             csrf = await self._session_csrf(s)
-            url = f"{self.base}/event/create/meeting?category_id={category_id}"
+            url = f"{self.base}/event/create/conference?category_id={category_id}"
             data = [("csrf_token", csrf), ("event-creation-csrf_token", csrf)] + list(fields)
             headers = {
                 "X-CSRF-Token": csrf,

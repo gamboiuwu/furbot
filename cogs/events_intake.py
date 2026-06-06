@@ -41,7 +41,7 @@ log = logging.getLogger("furbot.events_intake")
 
 # Bump on each deploy-worthy change so /healthz reveals exactly what's running.
 # (Lets us confirm a Railway redeploy actually picked up new code.)
-BUILD = "2026-06-06.indico-create-csrf"
+BUILD = "2026-06-06.indico-rich-fields"
 
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
@@ -246,6 +246,19 @@ class EventsIntake(commands.Cog):
                 out = await creator.debug_fetch_form(cat)
             elif action == "get":
                 out = await creator.debug_get(str(data.get("path", "/")))
+            elif action == "createfull":
+                d = await creator.create_meeting(
+                    category_id=cat,
+                    title=data.get("title", "[TEST] Full create"),
+                    start=data.get("start", "2026-07-25 13:00"),
+                    end=data.get("end", "2026-07-25 16:00"),
+                    unlisted=bool(data.get("unlisted", True)),
+                    event_type=data.get("event_type", "conference"),
+                    description_html=data.get("description_html"),
+                    location=data.get("location"),
+                    contacts=data.get("contacts"),
+                )
+                out = {"url": d.url, "event_id": d.event_id}
             elif action == "rawpost":
                 fields = [(str(k), str(v)) for k, v in data.get("fields", [])]
                 out = await creator.debug_raw_create(cat, fields)
@@ -542,7 +555,7 @@ class EventsIntake(commands.Cog):
         draft = None
         autocreate_err = ""
         if self._s("event_autocreate_enabled"):
-            draft, autocreate_err = await self._try_autocreate(title, when_start, when_end)
+            draft, autocreate_err = await self._try_autocreate(title, when_start, when_end, app)
 
         if draft is not None:
             success_msg = (
@@ -580,7 +593,7 @@ class EventsIntake(commands.Cog):
             pass
         await interaction.followup.send("Accepted — draft details posted in the thread. ^w^", ephemeral=True)
 
-    async def _try_autocreate(self, title: str, start: str, end: str):
+    async def _try_autocreate(self, title: str, start: str, end: str, app: dict | None = None):
         """Attempt a real Indico draft. Returns (IndicoDraft|None, error_str)."""
         user = getattr(self.config, "indico_username", None)
         pw = getattr(self.config, "indico_password", None)
@@ -589,11 +602,18 @@ class EventsIntake(commands.Cog):
         base = (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
         cat = int(self._s("indico_category_id") or 0)
         tz = self._s("event_autocreate_timezone") or "America/New_York"
+        etype = (self._s("event_autocreate_type") or "conference").strip().lower()
+        app = app or {}
+        description_html = self._build_description_html(app)
+        location = {"venue_name": app.get("loc_name", ""), "address": app.get("loc_addr", "")}
+        emails = [e for e in re.split(r"[,\s]+", app.get("contact", "")) if "@" in e]
+        contacts = {"title": "Contact", "emails": emails, "phones": []}
         creator = IndicoEventCreator(base, user, pw)
         try:
             draft = await creator.create_meeting(
                 category_id=cat, title=title, start=start, end=end,
-                timezone=tz, unlisted=True,
+                timezone=tz, unlisted=True, event_type=etype,
+                description_html=description_html, location=location, contacts=contacts,
             )
             log.info("Auto-created Indico draft %s (%s)", draft.event_id, draft.url)
             return draft, ""
@@ -603,6 +623,43 @@ class EventsIntake(commands.Cog):
         except Exception as e:  # network, parsing, anything — never block staff
             log.exception("Unexpected Indico auto-create error")
             return None, f"unexpected error: {e}"
+
+    @staticmethod
+    def _build_description_html(app: dict) -> str:
+        """Rich-text event description mirroring how NYFurs events present info:
+        the applicant's blurb, then a details block (location, cost, contact…)."""
+        import html as _html
+
+        def esc(v) -> str:
+            return _html.escape(str(v or "").strip())
+
+        parts: list[str] = []
+        desc = esc(app.get("description", "")).replace("\n", "<br>")
+        if desc:
+            parts.append(f"<p>{desc}</p>")
+
+        when = " – ".join(x for x in (app.get("start", ""), app.get("end", "")) if x)
+        loc_bits = [x for x in (app.get("loc_name", ""), app.get("loc_addr", "")) if x]
+        loc = ", ".join(esc(x) for x in loc_bits)
+        if app.get("loc_link"):
+            link = f'<a href="{esc(app["loc_link"])}">map</a>'
+            loc = f"{loc} ({link})" if loc else link
+
+        rows = [
+            ("📅 Date &amp; Time", esc(when)),
+            ("🔁 Repeats", esc(app.get("repeats", ""))),
+            ("📍 Location", loc),
+            ("💰 Cost", esc(app.get("cost", ""))),
+            ("👤 Host", esc(app.get("host", ""))),
+            ("🔓 Public/Private", esc(app.get("public", ""))),
+            ("👶 Minors allowed", esc(app.get("minors", ""))),
+            ("🦊 Fursuit-friendly", esc(app.get("fursuit", ""))),
+            ("📬 Contact", esc(app.get("contact", ""))),
+        ]
+        detail = "<br>".join(f"<strong>{label}:</strong> {val}" for label, val in rows if val)
+        if detail:
+            parts.append(f"<p>{detail}</p>")
+        return "\n".join(parts)
 
     async def finish_decline(self, interaction: discord.Interaction, sid: str, reason: str) -> None:
         app = self.store.get(APPS, {}).get(sid)
