@@ -41,7 +41,7 @@ log = logging.getLogger("furbot.events_intake")
 
 # Bump on each deploy-worthy change so /healthz reveals exactly what's running.
 # (Lets us confirm a Railway redeploy actually picked up new code.)
-BUILD = "2026-06-06.all-questions"
+BUILD = "2026-06-06.closed-on-delete"
 
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
@@ -759,6 +759,11 @@ class EventsIntake(commands.Cog):
             if now - rec.get("last_ping", 0) < repeat:
                 continue
             thread = self.bot.get_channel(int(rec.get("thread_id") or 0))
+            if thread is None:
+                rec["status"] = "closed"
+                changed = True
+                log.info("Application %s: thread deleted, marking closed", sid)
+                continue
             if not isinstance(thread, discord.Thread):
                 continue
             ping_ok = bool(self._s("event_ping_enabled"))
@@ -771,6 +776,10 @@ class EventsIntake(commands.Cog):
                 )
                 rec["last_ping"] = int(now)
                 changed = True
+            except discord.NotFound:
+                rec["status"] = "closed"
+                changed = True
+                log.info("Application %s: thread deleted (NotFound on send), marking closed", sid)
             except discord.HTTPException:
                 log.info("Could not escalate application %s", sid)
         # Publish check: after an event is accepted+created, make sure it actually
@@ -802,12 +811,20 @@ class EventsIntake(commands.Cog):
                 if isinstance(thread, discord.Thread):
                     try:
                         await thread.send("🎉 This event is now **live** on events.nyfurs.org. Nice work!")
+                    except discord.NotFound:
+                        rec["status"] = "closed"
+                        log.info("Application %s: thread deleted (NotFound on live ping), marking closed", sid)
                     except discord.HTTPException:
                         pass
                 continue
             if now - rec.get("publish_last_ping", 0) < repeat:
                 continue
             thread = self.bot.get_channel(int(rec.get("thread_id") or 0))
+            if thread is None:
+                rec["status"] = "closed"
+                changed = True
+                log.info("Application %s: thread deleted (publish check), marking closed", sid)
+                continue
             if not isinstance(thread, discord.Thread):
                 continue
             mention = f"<@&{role_id}> " if (role_id and ping_ok) else ""
@@ -821,6 +838,10 @@ class EventsIntake(commands.Cog):
                 )
                 rec["publish_last_ping"] = int(now)
                 changed = True
+            except discord.NotFound:
+                rec["status"] = "closed"
+                changed = True
+                log.info("Application %s: thread deleted (NotFound on publish ping), marking closed", sid)
             except discord.HTTPException:
                 log.info("Could not send publish reminder for %s", sid)
         return changed
