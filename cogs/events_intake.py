@@ -41,7 +41,7 @@ log = logging.getLogger("furbot.events_intake")
 
 # Bump on each deploy-worthy change so /healthz reveals exactly what's running.
 # (Lets us confirm a Railway redeploy actually picked up new code.)
-BUILD = "2026-06-06.indico-debug-hook3"
+BUILD = "2026-06-06.indico-create-csrf"
 
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
