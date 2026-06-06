@@ -41,7 +41,7 @@ log = logging.getLogger("furbot.events_intake")
 
 # Bump on each deploy-worthy change so /healthz reveals exactly what's running.
 # (Lets us confirm a Railway redeploy actually picked up new code.)
-BUILD = "2026-06-06.publish-check"
+BUILD = "2026-06-06.all-questions"
 
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
@@ -355,7 +355,12 @@ class EventsIntake(commands.Cog):
 
         record = {
             "submission_id": sid, "thread_id": thread.id, "status": "pending",
-            "created": int(time.time()), "last_ping": 0, **m,
+            "created": int(time.time()), "last_ping": 0,
+            # Persist EVERY raw question/answer so the full form (not just the
+            # mapped subset) can be carried into the Indico event on Accept.
+            "answers": [{"q": str(a.get("q", "")).strip(), "a": str(a.get("a", "")).strip()}
+                        for a in answers if str(a.get("q", "")).strip()],
+            **m,
         }
 
         def _mut(store: dict) -> None:
@@ -666,6 +671,23 @@ class EventsIntake(commands.Cog):
         detail = "<br>".join(f"<strong>{label}:</strong> {val}" for label, val in rows if val)
         if detail:
             parts.append(f"<p>{detail}</p>")
+
+        # Include EVERY question from the application form, so nothing the
+        # applicant answered is lost — even questions the bot doesn't map to a
+        # specific Indico field. (Skip the main description, already shown above.)
+        answers = app.get("answers") or []
+        extra = []
+        for a in answers:
+            q = esc(a.get("q", ""))
+            v = esc(a.get("a", "")).replace("\n", "<br>")
+            if not q or not v:
+                continue
+            if _norm(a.get("q", "")) in ("description",):
+                continue
+            extra.append(f"<strong>{q}:</strong> {v}")
+        if extra:
+            parts.append("<hr><p><strong>📋 Full application responses</strong></p>")
+            parts.append("<p>" + "<br>".join(extra) + "</p>")
         return "\n".join(parts)
 
     async def finish_decline(self, interaction: discord.Interaction, sid: str, reason: str) -> None:
