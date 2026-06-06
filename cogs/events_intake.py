@@ -35,6 +35,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from checks import NotStaff, is_staff
+from integrations.indico_create import IndicoCreateError, IndicoEventCreator
 
 log = logging.getLogger("furbot.events_intake")
 
@@ -132,6 +133,18 @@ class EventsIntake(commands.Cog):
 
     def _s(self, key: str):
         return self.settings.get(key)
+
+    def _autocreate_status(self) -> str:
+        if not self._s("event_autocreate_enabled"):
+            return "off (manual paste-draft)"
+        have_creds = bool(getattr(self.config, "indico_username", None)
+                          and getattr(self.config, "indico_password", None))
+        cat = int(self._s("indico_category_id") or 0)
+        if not have_creds:
+            return "⚠️ on, but INDICO_USERNAME/INDICO_PASSWORD not set"
+        if not cat:
+            return "⚠️ on, but indico_category_id is 0 (needed to create)"
+        return "✅ on (unlisted drafts)"
 
     # ---- web server ------------------------------------------------------
 
@@ -261,7 +274,8 @@ class EventsIntake(commands.Cog):
         files, skipped = self._decode_files(data.get("files") or [])
 
         role_id = int(self._s("event_team_role_id") or 0)
-        ping = f"<@&{role_id}> " if role_id else ""
+        ping_ok = bool(self._s("event_ping_enabled"))
+        ping = f"<@&{role_id}> " if (role_id and ping_ok) else ""
         content = f"{ping}**New event application** from **{m['host'] or 'someone'}** — needs review."
         if skipped:
             content += "\n⚠️ Some files were too large/many to attach: " + ", ".join(skipped)
@@ -384,35 +398,169 @@ class EventsIntake(commands.Cog):
         base = (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
         cat = self._s("indico_category_id") or 0
         create_link = f"{base}/category/{cat}/" if cat else f"{base}/"
-        draft = (
-            "✅ **Accepted — here's the Indico draft to create** (mark it as **Conference**):\n"
-            f"```\n"
-            f"Type:        Conference\n"
-            f"Title:       {app.get('title','')}\n"
-            f"Start:       {app.get('start','')}\n"
-            f"End:         {app.get('end','')}\n"
-            f"Location:    {(app.get('loc_name','') + ' — ' + app.get('loc_addr','')).strip(' —')}\n"
-            f"Host:        {app.get('host','')}\n"
-            f"Accent:      {app.get('accent','')}\n"
-            f"Description:\n{app.get('description','')}\n"
-            f"```\n"
-            f"Create it here: {create_link}\n"
-            f"(Once it's live, drop the event link in this thread.)"
+
+        # ── map fields ────────────────────────────────────────────────────────
+        title       = app.get("title") or "Event"
+        when_start  = app.get("start", "")
+        when_end    = app.get("end", "")
+        when        = " – ".join(x for x in (when_start, when_end) if x) or "—"
+        loc_name    = app.get("loc_name", "")
+        loc_addr    = app.get("loc_addr", "")
+        loc_link    = app.get("loc_link", "")
+        loc_parts   = [x for x in (loc_name, loc_addr) if x]
+        loc_val     = "\n".join(loc_parts) + (f"\n{loc_link}" if loc_link else "")
+        host        = app.get("host", "")
+        description = app.get("description", "")
+        repeats     = app.get("repeats", "")
+        cost        = app.get("cost", "")
+        minors      = app.get("minors", "")
+        fursuit     = app.get("fursuit", "")
+        public_     = app.get("public", "")
+        contact     = app.get("contact", "")
+        accent      = app.get("accent", "")
+
+        # ── preview embed styled like the Indico event-page layout ────────────
+        embed = discord.Embed(
+            title=title[:256],
+            description=(description[:4000] if description else None),
+            color=discord.Color.green(),
         )
+        embed.add_field(name="📅 Date & Time", value=when, inline=True)
+        if host:
+            embed.add_field(name="👤 Organizer", value=host, inline=True)
+        if public_:
+            embed.add_field(name="🔓 Type", value=public_, inline=True)
+        if loc_val.strip():
+            embed.add_field(name="📍 Location", value=loc_val.strip()[:1024], inline=False)
+        if repeats:
+            embed.add_field(name="🔁 Recurring", value=repeats, inline=True)
+        if cost:
+            embed.add_field(name="💰 Cost", value=cost, inline=True)
+        info_parts = []
+        if minors:
+            info_parts.append(f"Minors: {minors}")
+        if fursuit:
+            info_parts.append(f"Fursuits: {fursuit}")
+        if info_parts:
+            embed.add_field(name="ℹ️ Info", value=" · ".join(info_parts), inline=True)
+        if contact:
+            embed.add_field(name="📬 Contact", value=contact[:1024], inline=False)
+        embed.set_footer(text=f"✅ Accepted · Ref: {sid}")
+
+        # ── description body for Indico's rich-text editor ────────────────────
+        # Real NYFurs events (FurFlix, Sayonara Summer, etc.) open with the
+        # main description paragraph, then a details block at the end.
+        extra_lines: list[str] = []
+        if loc_parts:
+            extra_lines.append(f"📍 Location: {', '.join(loc_parts)}")
+        if loc_link:
+            extra_lines.append(f"🗺️ {loc_link}")
+        if cost:
+            extra_lines.append(f"💰 Cost: {cost}")
+        if repeats:
+            extra_lines.append(f"🔁 Recurring: {repeats}")
+        if minors:
+            extra_lines.append(f"👶 Minors allowed: {minors}")
+        if fursuit:
+            extra_lines.append(f"🦊 Fursuit-friendly: {fursuit}")
+        if public_:
+            extra_lines.append(f"🔓 {public_}")
+        if contact:
+            extra_lines.append(f"📬 Contact: {contact}")
+        desc_for_indico = (
+            (description.rstrip() + "\n\n" + "\n".join(extra_lines)).lstrip()
+            if extra_lines else description
+        )
+
+        # ── form-fields cheat-sheet (for the Indico create wizard) ────────────
+        fields_block = (
+            f"Type:       Conference\n"
+            f"Title:      {title}\n"
+            f"Start:      {when_start}\n"
+            f"End:        {when_end}\n"
+            f"Venue:      {loc_name}\n"
+            f"Address:    {loc_addr}\n"
+            f"Organizer:  {host}\n"
+            f"Accent:     {accent}"
+        )
+
+        paste_msg = (
+            f"✅ **Accepted!** Create the Indico event here (type = **Conference**):\n"
+            f"<{create_link}>\n\n"
+            f"**Indico form fields:**\n```\n{fields_block}\n```\n"
+            f"**Description — paste into the rich-text editor:**\n"
+            f"```\n{desc_for_indico[:1800]}\n```\n"
+            f"_Drop the live event link here once it's up._"
+        )
+
         thread = interaction.channel
+
+        # Try to have Indico create the draft itself; fall back to the
+        # copy-paste draft above if anything goes wrong (so staff aren't stuck).
+        draft = None
+        autocreate_err = ""
+        if self._s("event_autocreate_enabled"):
+            draft, autocreate_err = await self._try_autocreate(title, when_start, when_end)
+
+        if draft is not None:
+            success_msg = (
+                f"✅ **Accepted — draft created on the site!**\n"
+                f"📝 {draft.url}\n"
+                f"It's **unlisted** (a private draft) until staff publish it. The "
+                f"meeting form only takes title + date, so please add the rest in "
+                f"Indico:\n```\n{desc_for_indico[:1700]}\n```"
+            )
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.send(content=success_msg, embed=embed)
+                except discord.HTTPException:
+                    pass
+        else:
+            msg = paste_msg
+            if self._s("event_autocreate_enabled") and autocreate_err:
+                msg = (
+                    f"⚠️ Couldn't auto-create the draft ({autocreate_err}). "
+                    f"Here's the manual draft instead:\n\n" + paste_msg
+                )
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.send(content=msg, embed=embed)
+                except discord.HTTPException:
+                    pass
+
         if isinstance(thread, discord.Thread):
-            try:
-                await thread.send(draft)
-            except discord.HTTPException:
-                pass
             await self._retag(thread, self._s("event_tag_pending") or "Changes Required",
                               self._s("event_tag_accepted") or "Accepted")
         await self._record_decision(sid, "accepted", interaction.user.id)
         try:
-            await interaction.message.edit(view=None)  # remove the buttons
+            await interaction.message.edit(view=None)
         except (discord.HTTPException, AttributeError):
             pass
         await interaction.followup.send("Accepted — draft details posted in the thread. ^w^", ephemeral=True)
+
+    async def _try_autocreate(self, title: str, start: str, end: str):
+        """Attempt a real Indico draft. Returns (IndicoDraft|None, error_str)."""
+        user = getattr(self.config, "indico_username", None)
+        pw = getattr(self.config, "indico_password", None)
+        if not user or not pw:
+            return None, "INDICO_USERNAME / INDICO_PASSWORD not set"
+        base = (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
+        cat = int(self._s("indico_category_id") or 0)
+        tz = self._s("event_autocreate_timezone") or "America/New_York"
+        creator = IndicoEventCreator(base, user, pw)
+        try:
+            draft = await creator.create_meeting(
+                category_id=cat, title=title, start=start, end=end,
+                timezone=tz, unlisted=True,
+            )
+            log.info("Auto-created Indico draft %s (%s)", draft.event_id, draft.url)
+            return draft, ""
+        except IndicoCreateError as e:
+            log.warning("Indico auto-create failed: %s", e)
+            return None, str(e)
+        except Exception as e:  # network, parsing, anything — never block staff
+            log.exception("Unexpected Indico auto-create error")
+            return None, f"unexpected error: {e}"
 
     async def finish_decline(self, interaction: discord.Interaction, sid: str, reason: str) -> None:
         app = self.store.get(APPS, {}).get(sid)
@@ -479,7 +627,8 @@ class EventsIntake(commands.Cog):
             thread = self.bot.get_channel(int(rec.get("thread_id") or 0))
             if not isinstance(thread, discord.Thread):
                 continue
-            mention = f"<@&{role_id}> " if role_id else ""
+            ping_ok = bool(self._s("event_ping_enabled"))
+            mention = f"<@&{role_id}> " if (role_id and ping_ok) else ""
             try:
                 await thread.send(
                     f"{mention}⏰ This event application has been waiting **over "
@@ -514,6 +663,8 @@ class EventsIntake(commands.Cog):
             f"**Webhook secret set:** {secret_set}  ·  **Server running:** {self._runner is not None}",
             f"**Post channel:** {f'<#{ch}>' if ch else '_not set_'} ({'forum ✅' if forum_ok else 'not a forum ⚠️'})",
             f"**Events Team role:** <@&{int(self._s('event_team_role_id') or 0)}>",
+            f"**Role pings:** {'✅ on' if self._s('event_ping_enabled') else '🔇 off (test mode)'}",
+            f"**Auto-create drafts:** {self._autocreate_status()}",
             f"**Applications:** {len(apps)} total · {pending} pending",
             f"**Escalation:** after {self._s('event_escalate_hours')}h, repeat every {self._s('event_escalate_repeat_hours')}h",
             f"**Intake path:** `{self._s('event_intake_path')}`",
