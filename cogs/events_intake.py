@@ -139,11 +139,8 @@ class EventsIntake(commands.Cog):
             return "off (manual paste-draft)"
         have_creds = bool(getattr(self.config, "indico_username", None)
                           and getattr(self.config, "indico_password", None))
-        cat = int(self._s("indico_category_id") or 0)
         if not have_creds:
             return "⚠️ on, but INDICO_USERNAME/INDICO_PASSWORD not set"
-        if not cat:
-            return "⚠️ on, but indico_category_id is 0 (needed to create)"
         return "✅ on (unlisted drafts)"
 
     # ---- web server ------------------------------------------------------

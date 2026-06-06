@@ -122,11 +122,7 @@ class IndicoEventCreator:
         timezone: str = "America/New_York",
         unlisted: bool = True,
     ) -> IndicoDraft:
-        if not category_id:
-            raise IndicoCreateError(
-                "no Indico category configured (set indico_category_id) — "
-                "events can't be created at the root."
-            )
+        # category_id 0 is the root category on this instance — a valid target.
         start_date, start_time = _split_dt(start)
         # If the end is blank/unparseable, default to two hours after the start.
         try:
