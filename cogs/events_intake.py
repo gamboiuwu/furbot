@@ -41,7 +41,7 @@ log = logging.getLogger("furbot.events_intake")
 
 # Bump on each deploy-worthy change so /healthz reveals exactly what's running.
 # (Lets us confirm a Railway redeploy actually picked up new code.)
-BUILD = "2026-06-06.indico-debug-post"
+BUILD = "2026-06-06.publish-check"
 
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
@@ -589,7 +589,11 @@ class EventsIntake(commands.Cog):
         if isinstance(thread, discord.Thread):
             await self._retag(thread, self._s("event_tag_pending") or "Changes Required",
                               self._s("event_tag_accepted") or "Accepted")
-        await self._record_decision(sid, "accepted", interaction.user.id)
+        await self._record_decision(
+            sid, "accepted", interaction.user.id,
+            indico_event_id=(draft.event_id if draft else ""),
+            indico_url=(draft.url if draft else ""),
+        )
         try:
             await interaction.message.edit(view=None)
         except (discord.HTTPException, AttributeError):
@@ -695,13 +699,19 @@ class EventsIntake(commands.Cog):
             pass
         await interaction.followup.send("Declined — the applicant's contact and your reason are in the thread.", ephemeral=True)
 
-    async def _record_decision(self, sid: str, status: str, by_id: int) -> None:
+    async def _record_decision(self, sid: str, status: str, by_id: int,
+                               indico_event_id: str = "", indico_url: str = "") -> None:
         def _mut(store: dict) -> None:
             rec = store.get(APPS, {}).get(sid)
             if rec:
                 rec["status"] = status
                 rec["decided_by"] = by_id
                 rec["decided_at"] = int(time.time())
+                if indico_event_id:
+                    rec["indico_event_id"] = indico_event_id
+                    rec["indico_url"] = indico_url
+                    rec["indico_live"] = False
+                    rec["publish_last_ping"] = 0
         await self.store.update(_mut)
 
     # ---- escalation ------------------------------------------------------
@@ -741,8 +751,81 @@ class EventsIntake(commands.Cog):
                 changed = True
             except discord.HTTPException:
                 log.info("Could not escalate application %s", sid)
+        # Publish check: after an event is accepted+created, make sure it actually
+        # goes live (listed in the category). If it's still not live N hours after
+        # acceptance, ping the Events Team daily until it is.
+        if await self._publish_check_pass(apps, now):
+            changed = True
         if changed:
             await self.store.set(APPS, apps)
+
+    async def _publish_check_pass(self, apps: dict, now: float) -> bool:
+        check_after = int(self._s("event_publish_check_hours") or 24) * 3600
+        repeat = int(self._s("event_publish_ping_hours") or 24) * 3600
+        role_id = int(self._s("event_team_role_id") or 0)
+        ping_ok = bool(self._s("event_ping_enabled"))
+        changed = False
+        for sid, rec in list(apps.items()):
+            if rec.get("status") != "accepted" or not rec.get("indico_event_id"):
+                continue
+            if rec.get("indico_live"):
+                continue
+            if now - rec.get("decided_at", now) < check_after:
+                continue
+            # Is it live now? (listed in the public category)
+            if await self._indico_event_listed(rec["indico_event_id"]):
+                rec["indico_live"] = True
+                changed = True
+                thread = self.bot.get_channel(int(rec.get("thread_id") or 0))
+                if isinstance(thread, discord.Thread):
+                    try:
+                        await thread.send("🎉 This event is now **live** on events.nyfurs.org. Nice work!")
+                    except discord.HTTPException:
+                        pass
+                continue
+            if now - rec.get("publish_last_ping", 0) < repeat:
+                continue
+            thread = self.bot.get_channel(int(rec.get("thread_id") or 0))
+            if not isinstance(thread, discord.Thread):
+                continue
+            mention = f"<@&{role_id}> " if (role_id and ping_ok) else ""
+            url = rec.get("indico_url", "")
+            try:
+                await thread.send(
+                    f"{mention}📣 This event was **approved over "
+                    f"{int(check_after // 3600)}h ago but isn't live yet** on the site. "
+                    f"Please finish setting it up and **publish it**: {url}",
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                rec["publish_last_ping"] = int(now)
+                changed = True
+            except discord.HTTPException:
+                log.info("Could not send publish reminder for %s", sid)
+        return changed
+
+    async def _indico_event_listed(self, event_id: str) -> bool:
+        """True if the event is published/listed in the configured category."""
+        token = getattr(self.config, "indico_api_token", None)
+        if not token:
+            return False
+        base = (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
+        cat = int(self._s("indico_category_id") or 0)
+        url = f"{base}/export/categ/{cat}.json"
+        try:
+            import aiohttp
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.get(url, params={"limit": "500"},
+                                 headers={"Authorization": f"Bearer {token}"}) as r:
+                    if r.status != 200:
+                        return False
+                    data = await r.json()
+            results = data.get("results") or []
+            eid = str(event_id)
+            return any(str(ev.get("id")) == eid for ev in results)
+        except Exception:
+            log.info("publish-check: could not query Indico category export")
+            return False
 
     @escalation_loop.before_loop
     async def _before(self) -> None:
