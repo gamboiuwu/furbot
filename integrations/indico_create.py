@@ -297,6 +297,16 @@ class IndicoEventCreator:
             cookie_jar=aiohttp.CookieJar(unsafe=True),
         )
 
+    async def debug_get(self, path: str) -> dict:
+        """Log in and GET an arbitrary path; return status + body (diagnostics)."""
+        async with self._debug_session() as s:
+            await self._login(s)
+            async with s.get(f"{self.base}{path}",
+                             headers={"X-Requested-With": "XMLHttpRequest",
+                                      "Accept": "application/json, text/html, */*"}) as r:
+                body = await r.text()
+        return {"status": r.status, "body": body[:8000]}
+
     async def debug_fetch_form(self, category_id: int) -> dict:
         """Log in and return the real authenticated create-form HTML + field names."""
         async with self._debug_session() as s:
