@@ -131,17 +131,11 @@ class FurBot(commands.Bot):
         self.add_view(HubView())
         self.add_view(ReportHubView())
 
-        # Register slash commands. If a guild ID is configured we sync to
-        # that guild for instant availability; otherwise we sync globally
-        # (can take up to an hour to show up).
-        if self.config.guild_id:
-            guild = discord.Object(id=self.config.guild_id)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            log.info("Synced %d slash command(s) to guild %s", len(synced), self.config.guild_id)
-        else:
-            synced = await self.tree.sync()
-            log.info("Synced %d slash command(s) globally", len(synced))
+        # Slash commands are registered per-guild for instant availability, but
+        # the bot's guild list isn't known until it connects — so the actual
+        # sync happens once in on_ready (see _sync_commands_once), covering
+        # EVERY server the bot is in (e.g. both the member server and the staff
+        # server), not just the configured GUILD_ID.
 
     async def save_config_snapshot(self) -> None:
         """Write a complete, non-secret snapshot of all configuration (the core
@@ -166,6 +160,36 @@ class FurBot(commands.Bot):
         log.info("Logged in as %s (id: %s)", self.user, self.user.id if self.user else "?")
         await self.change_presence(activity=discord.Game(name="watching over NYFurs 🐾"))
         self._log_config_check()
+        await self._sync_commands_once()
+
+    async def _sync_commands_once(self) -> None:
+        """Register slash commands in every guild the bot is in (member server,
+        staff server, etc.). Guild-scoped syncs show up instantly. Runs once per
+        process; on_ready can fire again on reconnect."""
+        if getattr(self, "_commands_synced", False):
+            return
+        self._commands_synced = True
+
+        guilds = list(self.guilds)
+        if not guilds:
+            synced = await self.tree.sync()
+            log.info("Synced %d slash command(s) globally (bot is in no guilds).", len(synced))
+            return
+
+        for guild in guilds:
+            self.tree.copy_global_to(guild=guild)
+            try:
+                synced = await self.tree.sync(guild=guild)
+                log.info("Synced %d slash command(s) to '%s' (%s)", len(synced), guild.name, guild.id)
+            except discord.Forbidden:
+                log.error(
+                    "Can't register commands in '%s' (%s): the bot is missing the "
+                    "'applications.commands' scope there. Re-invite it to that server "
+                    "with the applications.commands scope enabled.",
+                    guild.name, guild.id,
+                )
+            except discord.HTTPException:
+                log.exception("Command sync failed for guild '%s' (%s)", guild.name, guild.id)
 
     def _log_config_check(self) -> None:
         """Print, to the logs, each configured ID and whether it actually

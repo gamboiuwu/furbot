@@ -39,6 +39,10 @@ from integrations.indico_create import IndicoCreateError, IndicoEventCreator
 
 log = logging.getLogger("furbot.events_intake")
 
+# Bump on each deploy-worthy change so /healthz reveals exactly what's running.
+# (Lets us confirm a Railway redeploy actually picked up new code.)
+BUILD = "2026-06-06.indico-login-fix"
+
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
 MAX_FILES = 10                     # Discord caps attachments per message
@@ -154,7 +158,7 @@ class EventsIntake(commands.Cog):
         path = self._s("event_intake_path") or "/event-intake"
         app = web.Application()
         app.router.add_post(path, self._handle_intake)
-        app.router.add_get("/healthz", lambda r: web.json_response({"ok": True}))
+        app.router.add_get("/healthz", lambda r: web.json_response({"ok": True, "build": BUILD}))
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, host="0.0.0.0", port=port)
@@ -665,6 +669,7 @@ class EventsIntake(commands.Cog):
             f"**Applications:** {len(apps)} total · {pending} pending",
             f"**Escalation:** after {self._s('event_escalate_hours')}h, repeat every {self._s('event_escalate_repeat_hours')}h",
             f"**Intake path:** `{self._s('event_intake_path')}`",
+            f"**Build:** `{BUILD}`",
         ]
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
