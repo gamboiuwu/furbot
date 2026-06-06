@@ -62,6 +62,29 @@ _CONTENT_ATTR_RE = re.compile(
 )
 # The create form's JSON response carries the new event's management URL.
 _REDIRECT_RE = re.compile(r'"redirect"\s*:\s*"([^"]+)"')
+# WTForms/Indico render per-field validation errors in elements whose class
+# contains "error" — e.g. <span class="form-field-error">This field is required.</span>
+_ERROR_TAG_RE = re.compile(
+    r"""<(?:span|div|p)[^>]*class=["']?[^"'>]*error[^"'>]*["']?[^>]*>(.*?)</(?:span|div|p)>""",
+    re.IGNORECASE | re.DOTALL,
+)
+_TAGS_RE = re.compile(r"<[^>]+>")
+
+
+def _form_errors(body: str) -> str:
+    """Pull human-readable validation errors out of Indico's re-rendered form.
+
+    The create endpoint returns JSON like {"html": "<form>...</form>"} with the
+    HTML JSON-escaped; un-escape it, then collect text from error elements.
+    """
+    html = body.replace('\\"', '"').replace("\\/", "/").replace("\\n", " ").replace("\\t", " ")
+    seen: list[str] = []
+    for m in _ERROR_TAG_RE.findall(html):
+        text = _TAGS_RE.sub("", m).strip()
+        text = re.sub(r"\s+", " ", text)
+        if text and text not in seen:
+            seen.append(text)
+    return "; ".join(seen)[:400]
 
 
 class IndicoCreateError(RuntimeError):
@@ -197,13 +220,8 @@ class IndicoEventCreator:
         The token rotates on login, so it must be read AFTER logging in. Every
         full Indico page embeds it in a <meta name="csrf-token"> tag.
         """
-        for path in ("/event/create/meeting", "/"):
+        for path in ("/", "/user/dashboard/"):
             async with s.get(f"{self.base}{path}") as r:
-                if r.status == 403 and path.startswith("/event/create"):
-                    raise IndicoCreateError(
-                        "this Indico account can't create events (403). Use an "
-                        "account with event-creation rights."
-                    )
                 if r.status >= 400:
                     continue
                 tok = _extract_csrf(await r.text())
@@ -222,23 +240,28 @@ class IndicoEventCreator:
         timezone: str,
         unlisted: bool,
     ) -> IndicoDraft:
-        create_url = f"{self.base}/event/create/meeting"
+        # The category is read from the `category_id` query arg (RHCreateEvent),
+        # and every form field carries WTForms' `event-creation-` prefix.
+        create_url = f"{self.base}/event/create/meeting?category_id={category_id}"
         csrf = await self._session_csrf(s)
+        P = "event-creation-"
 
         # IndicoDateTimeField reads a (date, time) pair submitted under the same
-        # name, so we pass each field twice.
+        # name, so we pass each datetime field twice.
         form: list[tuple[str, str]] = [
             ("csrf_token", csrf),
-            ("category_id", str(category_id)),
-            ("category", str(category_id)),
-            ("title", title[:1000] or "Untitled event"),
-            ("timezone", timezone),
-            ("start_dt", start[0]), ("start_dt", start[1]),
-            ("end_dt", end[0]), ("end_dt", end[1]),
-            ("protection_mode", "inheriting"),
-            # Empty string is a WTForms "false" value -> unlisted private draft.
-            ("listing", "" if unlisted else "true"),
+            (P + "category", str(category_id)),
+            (P + "title", title[:1000] or "Untitled event"),
+            (P + "timezone", timezone),
+            (P + "start_dt", start[0]), (P + "start_dt", start[1]),
+            (P + "end_dt", end[0]), (P + "end_dt", end[1]),
+            (P + "protection_mode", "inheriting"),
         ]
+        # `listing` is a boolean toggle: present/truthy -> listed in the
+        # category; omitted -> unlisted private draft.
+        if not unlisted:
+            form.append((P + "listing", "on"))
+
         post_headers = {
             "X-CSRF-Token": csrf,
             "X-Requested-With": "XMLHttpRequest",
@@ -247,18 +270,23 @@ class IndicoEventCreator:
         async with s.post(create_url, data=form, headers=post_headers, allow_redirects=False) as r:
             body = await r.text()
             loc = r.headers.get("Location", "")
+            if r.status == 403:
+                raise IndicoCreateError(
+                    "Indico refused the create (403) — the account lacks "
+                    "event-creation rights in this category."
+                )
             if r.status in (301, 302, 303, 307) and loc:
                 return self._draft_from(loc)
             if r.status >= 400:
-                raise IndicoCreateError(f"create POST HTTP {r.status}: {body[:200]}")
-            # Indico answers the AJAX create with JSON containing a redirect URL.
+                raise IndicoCreateError(f"create POST HTTP {r.status}: {body[:300]}")
+            # Indico answers the AJAX create with JSON: a redirect on success, or
+            # the re-rendered form (with field errors) on validation failure.
             m = _REDIRECT_RE.search(body)
             if m:
                 return self._draft_from(m.group(1).replace("\\/", "/"))
-            raise IndicoCreateError(
-                "create POST returned no redirect — the form may have rejected "
-                f"a field. First 200 chars: {body[:200]}"
-            )
+            errors = _form_errors(body)
+            detail = f" Indico said: {errors}" if errors else f" First 300 chars: {body[:300]}"
+            raise IndicoCreateError("Indico rejected the event form." + detail)
 
     def _draft_from(self, location: str) -> IndicoDraft:
         if location.startswith("/"):
