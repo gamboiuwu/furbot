@@ -44,20 +44,22 @@ log = logging.getLogger("furbot.indico_create")
 
 # Pull the CSRF token out of a rendered Indico page. Indico renders it as a
 # <meta name="csrf-token" content="..."> tag and/or a hidden <input
-# name="csrf_token" value="...">. Match either, tolerating attribute order.
-_CSRF_META_RE = re.compile(
-    r"""<meta[^>]*\bname=["']csrf-token["'][^>]*\bcontent=["']([^"']+)["']""",
-    re.IGNORECASE,
+# name="csrf_token" value="...">. Indico ALSO minifies its HTML and strips the
+# quotes around simple attribute values (e.g. `value=de1d9858-...`), so every
+# attribute matcher must tolerate quoted *and* unquoted values, in any order.
+_META_CSRF_TAG_RE = re.compile(
+    r"""<meta\b[^>]*\bname=["']?csrf-token["']?[^>]*>""", re.IGNORECASE
 )
-_CSRF_META_REV_RE = re.compile(
-    r"""<meta[^>]*\bcontent=["']([^"']+)["'][^>]*\bname=["']csrf-token["']""",
-    re.IGNORECASE,
-)
-# Any <input ... name="csrf_token" ...>, with value on either side of name.
 _CSRF_INPUT_TAG_RE = re.compile(
-    r"""<input\b[^>]*\bname=["']csrf_token["'][^>]*>""", re.IGNORECASE
+    r"""<input\b[^>]*\bname=["']?csrf_token["']?[^>]*>""", re.IGNORECASE
 )
-_VALUE_ATTR_RE = re.compile(r"""\bvalue=["']([^"']+)["']""", re.IGNORECASE)
+# value="x" | value='x' | value=x  (unquoted runs until whitespace or '>')
+_VALUE_ATTR_RE = re.compile(
+    r"""\bvalue=(?:"([^"]+)"|'([^']+)'|([^\s>]+))""", re.IGNORECASE
+)
+_CONTENT_ATTR_RE = re.compile(
+    r"""\bcontent=(?:"([^"]+)"|'([^']+)'|([^\s>]+))""", re.IGNORECASE
+)
 # The create form's JSON response carries the new event's management URL.
 _REDIRECT_RE = re.compile(r'"redirect"\s*:\s*"([^"]+)"')
 
@@ -72,15 +74,24 @@ class IndicoDraft:
     event_id: str     # numeric id, best-effort
 
 
+def _attr(match: re.Match | None) -> str | None:
+    """First non-empty group from a quoted/unquoted attribute match."""
+    if not match:
+        return None
+    return next((g for g in match.groups() if g), None)
+
+
 def _extract_csrf(html: str) -> str | None:
-    m = _CSRF_META_RE.search(html) or _CSRF_META_REV_RE.search(html)
-    if m:
-        return m.group(1)
+    tag = _META_CSRF_TAG_RE.search(html)
+    if tag:
+        v = _attr(_CONTENT_ATTR_RE.search(tag.group(0)))
+        if v:
+            return v
     tag = _CSRF_INPUT_TAG_RE.search(html)
     if tag:
-        v = _VALUE_ATTR_RE.search(tag.group(0))
+        v = _attr(_VALUE_ATTR_RE.search(tag.group(0)))
         if v:
-            return v.group(1)
+            return v
     return None
 
 
@@ -151,31 +162,54 @@ class IndicoEventCreator:
             )
 
     async def _login(self, s: aiohttp.ClientSession) -> None:
-        login_url = f"{self.base}/login/indico/"
+        # The local-login form lives on /login/ itself (not /login/<provider>/,
+        # which only handles external/OAuth providers and 404s on GET). Its
+        # fields are: identifier (username/email), password, _provider=indico,
+        # csrf_token.
+        login_url = f"{self.base}/login/"
         async with s.get(login_url) as r:
             html = await r.text()
             if r.status >= 400:
                 raise IndicoCreateError(f"login page HTTP {r.status}")
         csrf = _extract_csrf(html)
-        # Indico's local-login form posts username/password (+ csrf).
-        data = {"username": self.username, "password": self.password}
+        data = {
+            "identifier": self.username,
+            "password": self.password,
+            "_provider": "indico",
+        }
         if csrf:
             data["csrf_token"] = csrf
         post_headers = {"X-CSRF-Token": csrf} if csrf else {}
         async with s.post(login_url, data=data, headers=post_headers, allow_redirects=True) as r:
-            body = await r.text()
+            final = str(r.url)
+            if r.status >= 400:
+                raise IndicoCreateError(f"login POST HTTP {r.status}")
             # A successful login redirects away from /login/; a failed one
-            # re-renders the form (often with an "invalid" message).
-            failed = (
-                r.status >= 400
-                or "/login" in str(r.url)
-                and ("invalid" in body.lower() or "incorrect" in body.lower()
-                     or 'name="password"' in body.lower())
-            )
-            if failed:
+            # re-renders the login form (final URL still under /login).
+            if "/login" in final.rsplit(self.base, 1)[-1]:
                 raise IndicoCreateError(
                     "Indico login failed — check INDICO_USERNAME / INDICO_PASSWORD."
                 )
+
+    async def _session_csrf(self, s: aiohttp.ClientSession) -> str:
+        """Fresh, session-bound CSRF token from an authenticated full page.
+
+        The token rotates on login, so it must be read AFTER logging in. Every
+        full Indico page embeds it in a <meta name="csrf-token"> tag.
+        """
+        for path in ("/event/create/meeting", "/"):
+            async with s.get(f"{self.base}{path}") as r:
+                if r.status == 403 and path.startswith("/event/create"):
+                    raise IndicoCreateError(
+                        "this Indico account can't create events (403). Use an "
+                        "account with event-creation rights."
+                    )
+                if r.status >= 400:
+                    continue
+                tok = _extract_csrf(await r.text())
+                if tok:
+                    return tok
+        raise IndicoCreateError("couldn't obtain a CSRF token after login")
 
     async def _post_create(
         self,
@@ -189,19 +223,7 @@ class IndicoEventCreator:
         unlisted: bool,
     ) -> IndicoDraft:
         create_url = f"{self.base}/event/create/meeting"
-        # GET the create dialog to obtain a fresh, session-bound CSRF token.
-        async with s.get(create_url) as r:
-            page = await r.text()
-            if r.status == 403:
-                raise IndicoCreateError(
-                    "this Indico account can't create events in that category "
-                    "(403). Use an account with management rights."
-                )
-            if r.status >= 400:
-                raise IndicoCreateError(f"create page HTTP {r.status}")
-        csrf = _extract_csrf(page)
-        if not csrf:
-            raise IndicoCreateError("couldn't find a CSRF token on the create page")
+        csrf = await self._session_csrf(s)
 
         # IndicoDateTimeField reads a (date, time) pair submitted under the same
         # name, so we pass each field twice.
