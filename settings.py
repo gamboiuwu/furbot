@@ -130,6 +130,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "event_ping_enabled":        (bool,  False, "Ping the Events Team role on new applications and escalations. Disable during testing."),
     "event_autocreate_enabled":  (bool,  False, "On Accept, auto-create an UNLISTED Indico event draft (needs INDICO_USERNAME/INDICO_PASSWORD). Falls back to a paste-draft on any failure."),
     "event_autocreate_timezone": (str,   "America/New_York", "Timezone used for auto-created Indico event drafts."),
+    "event_autocreate_type":     (str,   "conference", "Indico event type for auto-created drafts: conference, meeting, or lecture."),
     "event_post_channel_id":     (int,   1356772182956445786, "Forum channel where event applications are posted for review."),
     "event_team_role_id":        (int,   1217534869664567306, "Events Team role pinged for new/overdue applications."),
     "event_tag_pending":         (str,   "Changes Required", "Forum tag applied to a new application awaiting a decision."),
