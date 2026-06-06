@@ -367,6 +367,21 @@ class IndicoEventCreator:
                 body = await r.text()
         return {"status": r.status, "body": body[:8000]}
 
+    async def debug_post(self, path: str, fields: list[tuple[str, str]]) -> dict:
+        """Log in and POST arbitrary form fields to an authenticated path."""
+        async with self._debug_session() as s:
+            await self._login(s)
+            csrf = await self._session_csrf(s)
+            data = [("csrf_token", csrf)] + list(fields)
+            headers = {"X-CSRF-Token": csrf, "X-Requested-With": "XMLHttpRequest",
+                       "Accept": "application/json, text/javascript, */*; q=0.01"}
+            async with s.post(f"{self.base}{path}", data=data, headers=headers,
+                             allow_redirects=False) as r:
+                body = await r.text()
+                loc = r.headers.get("Location", "")
+        return {"status": r.status, "location": loc,
+                "errors": _form_errors(body), "body": body[:6000]}
+
     async def debug_fetch_form(self, category_id: int) -> dict:
         """Log in and return the real authenticated create-form HTML + field names."""
         async with self._debug_session() as s:

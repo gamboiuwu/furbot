@@ -41,7 +41,7 @@ log = logging.getLogger("furbot.events_intake")
 
 # Bump on each deploy-worthy change so /healthz reveals exactly what's running.
 # (Lets us confirm a Railway redeploy actually picked up new code.)
-BUILD = "2026-06-06.indico-rich-fields"
+BUILD = "2026-06-06.indico-debug-post"
 
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
@@ -246,6 +246,9 @@ class EventsIntake(commands.Cog):
                 out = await creator.debug_fetch_form(cat)
             elif action == "get":
                 out = await creator.debug_get(str(data.get("path", "/")))
+            elif action == "post":
+                fields = [(str(k), str(v)) for k, v in data.get("fields", [])]
+                out = await creator.debug_post(str(data.get("path", "/")), fields)
             elif action == "createfull":
                 d = await creator.create_meeting(
                     category_id=cat,
