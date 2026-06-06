@@ -325,8 +325,18 @@ class IndicoEventCreator:
             async with s.post(url, data=data, headers=headers, allow_redirects=False) as r:
                 body = await r.text()
                 loc = r.headers.get("Location", "")
+        html = body.replace('\\"', '"').replace("\\/", "/").replace("\\n", "\n").replace("\\t", "\t")
+        # Pull only markup that carries a real validation error, skipping the
+        # room-booking widget's static Angular templates.
+        real = []
+        for m in re.finditer(r'class="[^"]*\b(?:has-error|form-field-error|i-form-field-error)\b[^"]*"[^>]*>(.{0,200}?)<', html):
+            t = _TAGS_RE.sub("", m.group(1)).strip()
+            if t:
+                real.append(t)
         return {"status": r.status, "location": loc,
-                "errors": _form_errors(body), "body": body[:6000]}
+                "errors": _form_errors(body), "real_errors": real[:20],
+                "title_roundtrip": "Auto-Create Probe" in html, "body_len": len(html),
+                "body": html[:16000]}
 
     def _draft_from(self, location: str) -> IndicoDraft:
         if location.startswith("/"):
