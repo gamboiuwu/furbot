@@ -247,15 +247,19 @@ class IndicoEventCreator:
         P = "event-creation-"
 
         # IndicoDateTimeField reads a (date, time) pair submitted under the same
-        # name, so we pass each datetime field twice.
+        # name, so we pass each datetime field twice. The form uses per-field
+        # CSRF (event-creation-csrf_token) and CategoryField wants JSON {"id":N}.
+        import json as _json
         form: list[tuple[str, str]] = [
             ("csrf_token", csrf),
-            (P + "category", str(category_id)),
+            (P + "csrf_token", csrf),
+            (P + "category", _json.dumps({"id": category_id})),
             (P + "title", title[:1000] or "Untitled event"),
             (P + "timezone", timezone),
             (P + "start_dt", start[0]), (P + "start_dt", start[1]),
             (P + "end_dt", end[0]), (P + "end_dt", end[1]),
             (P + "protection_mode", "inheriting"),
+            (P + "create_booking", "false"),
         ]
         # `listing` is a boolean toggle: present/truthy -> listed in the
         # category; omitted -> unlisted private draft.
@@ -326,7 +330,7 @@ class IndicoEventCreator:
             await self._login(s)
             csrf = await self._session_csrf(s)
             url = f"{self.base}/event/create/meeting?category_id={category_id}"
-            data = [("csrf_token", csrf)] + list(fields)
+            data = [("csrf_token", csrf), ("event-creation-csrf_token", csrf)] + list(fields)
             headers = {
                 "X-CSRF-Token": csrf,
                 "X-Requested-With": "XMLHttpRequest",
