@@ -35,6 +35,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from checks import NotStaff, is_staff
+from integrations.indico_create import IndicoCreateError, IndicoEventCreator
 
 log = logging.getLogger("furbot.events_intake")
 
@@ -132,6 +133,18 @@ class EventsIntake(commands.Cog):
 
     def _s(self, key: str):
         return self.settings.get(key)
+
+    def _autocreate_status(self) -> str:
+        if not self._s("event_autocreate_enabled"):
+            return "off (manual paste-draft)"
+        have_creds = bool(getattr(self.config, "indico_username", None)
+                          and getattr(self.config, "indico_password", None))
+        cat = int(self._s("indico_category_id") or 0)
+        if not have_creds:
+            return "⚠️ on, but INDICO_USERNAME/INDICO_PASSWORD not set"
+        if not cat:
+            return "⚠️ on, but indico_category_id is 0 (needed to create)"
+        return "✅ on (unlisted drafts)"
 
     # ---- web server ------------------------------------------------------
 
@@ -471,7 +484,7 @@ class EventsIntake(commands.Cog):
             f"Accent:     {accent}"
         )
 
-        msg = (
+        paste_msg = (
             f"✅ **Accepted!** Create the Indico event here (type = **Conference**):\n"
             f"<{create_link}>\n\n"
             f"**Indico form fields:**\n```\n{fields_block}\n```\n"
@@ -481,11 +494,41 @@ class EventsIntake(commands.Cog):
         )
 
         thread = interaction.channel
+
+        # Try to have Indico create the draft itself; fall back to the
+        # copy-paste draft above if anything goes wrong (so staff aren't stuck).
+        draft = None
+        autocreate_err = ""
+        if self._s("event_autocreate_enabled"):
+            draft, autocreate_err = await self._try_autocreate(title, when_start, when_end)
+
+        if draft is not None:
+            success_msg = (
+                f"✅ **Accepted — draft created on the site!**\n"
+                f"📝 {draft.url}\n"
+                f"It's **unlisted** (a private draft) until staff publish it. The "
+                f"meeting form only takes title + date, so please add the rest in "
+                f"Indico:\n```\n{desc_for_indico[:1700]}\n```"
+            )
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.send(content=success_msg, embed=embed)
+                except discord.HTTPException:
+                    pass
+        else:
+            msg = paste_msg
+            if self._s("event_autocreate_enabled") and autocreate_err:
+                msg = (
+                    f"⚠️ Couldn't auto-create the draft ({autocreate_err}). "
+                    f"Here's the manual draft instead:\n\n" + paste_msg
+                )
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.send(content=msg, embed=embed)
+                except discord.HTTPException:
+                    pass
+
         if isinstance(thread, discord.Thread):
-            try:
-                await thread.send(content=msg, embed=embed)
-            except discord.HTTPException:
-                pass
             await self._retag(thread, self._s("event_tag_pending") or "Changes Required",
                               self._s("event_tag_accepted") or "Accepted")
         await self._record_decision(sid, "accepted", interaction.user.id)
@@ -494,6 +537,30 @@ class EventsIntake(commands.Cog):
         except (discord.HTTPException, AttributeError):
             pass
         await interaction.followup.send("Accepted — draft details posted in the thread. ^w^", ephemeral=True)
+
+    async def _try_autocreate(self, title: str, start: str, end: str):
+        """Attempt a real Indico draft. Returns (IndicoDraft|None, error_str)."""
+        user = getattr(self.config, "indico_username", None)
+        pw = getattr(self.config, "indico_password", None)
+        if not user or not pw:
+            return None, "INDICO_USERNAME / INDICO_PASSWORD not set"
+        base = (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
+        cat = int(self._s("indico_category_id") or 0)
+        tz = self._s("event_autocreate_timezone") or "America/New_York"
+        creator = IndicoEventCreator(base, user, pw)
+        try:
+            draft = await creator.create_meeting(
+                category_id=cat, title=title, start=start, end=end,
+                timezone=tz, unlisted=True,
+            )
+            log.info("Auto-created Indico draft %s (%s)", draft.event_id, draft.url)
+            return draft, ""
+        except IndicoCreateError as e:
+            log.warning("Indico auto-create failed: %s", e)
+            return None, str(e)
+        except Exception as e:  # network, parsing, anything — never block staff
+            log.exception("Unexpected Indico auto-create error")
+            return None, f"unexpected error: {e}"
 
     async def finish_decline(self, interaction: discord.Interaction, sid: str, reason: str) -> None:
         app = self.store.get(APPS, {}).get(sid)
@@ -597,6 +664,7 @@ class EventsIntake(commands.Cog):
             f"**Post channel:** {f'<#{ch}>' if ch else '_not set_'} ({'forum ✅' if forum_ok else 'not a forum ⚠️'})",
             f"**Events Team role:** <@&{int(self._s('event_team_role_id') or 0)}>",
             f"**Role pings:** {'✅ on' if self._s('event_ping_enabled') else '🔇 off (test mode)'}",
+            f"**Auto-create drafts:** {self._autocreate_status()}",
             f"**Applications:** {len(apps)} total · {pending} pending",
             f"**Escalation:** after {self._s('event_escalate_hours')}h, repeat every {self._s('event_escalate_repeat_hours')}h",
             f"**Intake path:** `{self._s('event_intake_path')}`",
