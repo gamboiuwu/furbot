@@ -127,6 +127,7 @@ SETTINGS: dict[str, tuple[type, object, str]] = {
     "suggestions_ping_days":     (int,   3,     "How often (days) to ping staff about an overdue to-do until it's Live."),
     "suggestions_live_tag":      (str,   "Live", "Forum tag name on the to-do channel that marks a task integrated/done."),
     "event_intake_enabled":      (bool,  False, "Master switch for the Event Application intake (Google Form -> #event-post)."),
+    "event_ping_enabled":        (bool,  False, "Ping the Events Team role on new applications and escalations. Disable during testing."),
     "event_post_channel_id":     (int,   1356772182956445786, "Forum channel where event applications are posted for review."),
     "event_team_role_id":        (int,   1217534869664567306, "Events Team role pinged for new/overdue applications."),
     "event_tag_pending":         (str,   "Changes Required", "Forum tag applied to a new application awaiting a decision."),
