@@ -288,6 +288,46 @@ class IndicoEventCreator:
             detail = f" Indico said: {errors}" if errors else f" First 300 chars: {body[:300]}"
             raise IndicoCreateError("Indico rejected the event form." + detail)
 
+    # ---- temporary debug helpers (remove once auto-create works) ----------
+
+    def _debug_session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            headers={"User-Agent": "FurBot/1.0 (+event-intake)", "Referer": self.base + "/"},
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        )
+
+    async def debug_fetch_form(self, category_id: int) -> dict:
+        """Log in and return the real authenticated create-form HTML + field names."""
+        async with self._debug_session() as s:
+            await self._login(s)
+            csrf = await self._session_csrf(s)
+            url = f"{self.base}/event/create/meeting?category_id={category_id}"
+            async with s.get(url, headers={"X-Requested-With": "XMLHttpRequest"}) as r:
+                body = await r.text()
+        html = body.replace('\\"', '"').replace("\\/", "/").replace("\\n", "\n")
+        names = sorted(set(re.findall(r'name=["\']?([A-Za-z0-9_\-]+)["\']?', html)))
+        return {"status": r.status, "csrf_present": bool(csrf),
+                "field_names": names, "html": html[:6000]}
+
+    async def debug_raw_create(self, category_id: int, fields: list[tuple[str, str]]) -> dict:
+        """Log in and POST arbitrary fields to the create URL; return raw result."""
+        async with self._debug_session() as s:
+            await self._login(s)
+            csrf = await self._session_csrf(s)
+            url = f"{self.base}/event/create/meeting?category_id={category_id}"
+            data = [("csrf_token", csrf)] + list(fields)
+            headers = {
+                "X-CSRF-Token": csrf,
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+            }
+            async with s.post(url, data=data, headers=headers, allow_redirects=False) as r:
+                body = await r.text()
+                loc = r.headers.get("Location", "")
+        return {"status": r.status, "location": loc,
+                "errors": _form_errors(body), "body": body[:6000]}
+
     def _draft_from(self, location: str) -> IndicoDraft:
         if location.startswith("/"):
             location = self.base + location
