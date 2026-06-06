@@ -41,7 +41,7 @@ log = logging.getLogger("furbot.events_intake")
 
 # Bump on each deploy-worthy change so /healthz reveals exactly what's running.
 # (Lets us confirm a Railway redeploy actually picked up new code.)
-BUILD = "2026-06-06.indico-create-fields"
+BUILD = "2026-06-06.indico-debug-hook"
 
 APPS = "event_applications"   # {submission_id: {thread_id, status, created, last_ping, mapped...}}
 MAX_FILE_BYTES = 8 * 1024 * 1024   # keep within the default Discord upload limit
@@ -158,6 +158,7 @@ class EventsIntake(commands.Cog):
         path = self._s("event_intake_path") or "/event-intake"
         app = web.Application()
         app.router.add_post(path, self._handle_intake)
+        app.router.add_post("/event-intake-debug", self._handle_debug)
         app.router.add_get("/healthz", lambda r: web.json_response({"ok": True, "build": BUILD}))
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -214,6 +215,44 @@ class EventsIntake(commands.Cog):
             log.exception("Failed to post event application %s", sid)
             return web.json_response({"ok": False, "error": "post failed"}, status=500)
         return web.json_response({"ok": True, "thread_id": thread_id})
+
+    async def _handle_debug(self, request: web.Request) -> web.Response:
+        """TEMPORARY signed debug hook for diagnosing Indico auto-create. Uses
+        the bot's own Indico credentials (server-side, never exposed). Remove
+        once auto-create is confirmed working.
+
+        Body: {"action": "form"|"rawpost", "category_id": int,
+               "fields": [[k, v], ...]}  (fields only for rawpost)
+        """
+        raw = await request.read()
+        if not self._verify(raw, request.headers):
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        user = getattr(self.config, "indico_username", None)
+        pw = getattr(self.config, "indico_password", None)
+        if not user or not pw:
+            return web.json_response({"ok": False, "error": "no indico creds"}, status=503)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return web.json_response({"ok": False, "error": "bad json"}, status=400)
+
+        from integrations.indico_create import IndicoEventCreator
+        base = (self._s("indico_url") or "https://events.nyfurs.org").rstrip("/")
+        cat = int(data.get("category_id", self._s("indico_category_id") or 0))
+        creator = IndicoEventCreator(base, user, pw)
+        action = data.get("action", "form")
+        try:
+            if action == "form":
+                out = await creator.debug_fetch_form(cat)
+            elif action == "rawpost":
+                fields = [(str(k), str(v)) for k, v in data.get("fields", [])]
+                out = await creator.debug_raw_create(cat, fields)
+            else:
+                out = {"error": f"unknown action {action!r}"}
+            return web.json_response({"ok": True, **out})
+        except Exception as e:
+            log.exception("debug hook failed")
+            return web.json_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=500)
 
     # ---- posting the application -----------------------------------------
 
